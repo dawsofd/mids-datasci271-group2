@@ -6,3 +6,6 @@
 *_files/
 stage2.pdf
 stage2.tex
+
+# personal scratch files
+scratch*.R
