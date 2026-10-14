@@ -3,13 +3,20 @@
 #   source("setup.R")
 
 pkgs <- c(
-  "fpp3",         # tsibble, feasts, fable, dplyr, tidyr, ggplot2, lubridate
-  "readr",        # read the CSVs in data/
-  "slider",       # trailing (one-sided) windows
-  "patchwork",    # combine plots
-  "urca",         # ADF and KPSS tests (Step 1)
-  "changepoint",  # PELT (Stage 1 break dates)
-  "strucchange",  # structural-change tests
+  # tsibble, feasts, fable, dplyr, tidyr, ggplot2, lubridate
+  "fpp3",
+  # read the CSVs in data/
+  "readr",
+  # trailing (one-sided) windows
+  "slider",
+  # combine plots
+  "patchwork",
+  # ADF and KPSS tests (Step 1)
+  "urca",
+  # PELT (Stage 1 break dates)
+  "changepoint",
+  # structural-change tests
+  "strucchange",
   "knitr",
   "kableExtra"
 )
