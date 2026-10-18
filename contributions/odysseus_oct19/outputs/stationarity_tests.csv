@@ -1,0 +1,7 @@
+"Series","Form","ADF_lags","ADF","KPSS","KPSS_lags"
+"CPI inflation","Level",2,-2.27188769384136,0.499868418877115,4
+"CPI inflation","First difference",1,-15.2369870355361,0.0746149157236898,4
+"Unemployment","Level",1,-2.37879592638728,0.540686924318701,4
+"Unemployment","First difference",0,-7.40870137017629,0.0981695974674133,4
+"3-month T-bill rate","Level",3,-2.44039055636173,0.64620546677793,4
+"3-month T-bill rate","First difference",2,-7.23345602204784,0.0747876630730325,4
