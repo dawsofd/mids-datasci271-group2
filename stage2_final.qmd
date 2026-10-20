@@ -1,8 +1,8 @@
 ---
 title: "Forecasting U.S. Inflation"
-subtitle: "Stage 2: October 19 Contribution"
-author: "Odysseus Kaloidas"
-date: "October 18, 2026"
+subtitle: "Stage 2: Core Paper-Based Forecast Comparison"
+author: "Sarat Chandra Vegunta, Dawson Dohlen, Jana, Odysseus Kaloidas"
+date: last-modified
 date-format: "MMMM D, YYYY"
 format:
   pdf:
@@ -20,14 +20,20 @@ execute:
 ```{r}
 #| label: setup
 knitr::opts_chunk$set(fig.align = "center", fig.pos = "H")
-knitr::opts_knit$set(root.dir = normalizePath("../.."))
 library(urca)
+
+# shared data loader and evaluation harness
+source("R/01_data.R")
+source("R/02_harness.R")
+
+# every team member's model file: R/03_models_<name>.R
+for (f in list.files("R", pattern = "^03_models_.*\\.R$", full.names = TRUE)) source(f)
 ```
 
 ```{r}
 #| label: shared-data-and-models
 #| results: hide
-source("contributions/odysseus_oct19/run_contribution.R")
+q <- load_quarterly()
 panel <- q |>
   filter(qtr <= yearquarter("2019 Q4")) |>
   transmute(quarter = gsub(" ", "", format(qtr)),
@@ -41,7 +47,6 @@ initial <- subset(panel, quarter <= "1999Q4")
 stopifnot(nrow(initial) == 160)
 series <- c("inflation", "UNRATE", "TB3MS")
 series_names <- c("CPI inflation", "Unemployment", "3-month T-bill rate")
-save_csv(panel, "quarterly_panel_1960_2019.csv")
 ```
 
 # Stage 1 recap
@@ -121,7 +126,6 @@ tests <- do.call(rbind, lapply(seq_along(series), function(j) {
   rbind(cbind(Series = series_names[j], Form = "Level", test_series(y)),
         cbind(Series = series_names[j], Form = "First difference", test_series(diff(y))))
 }))
-save_csv(tests, "stationarity_tests.csv")
 knitr::kable(tests[c("Series", "Form", "ADF_lags", "ADF", "KPSS")],
              col.names = c("Series", "Form", "ADF lags", "ADF", "KPSS"),
              digits = 3, booktabs = TRUE)
@@ -167,7 +171,6 @@ schedule <- do.call(rbind, lapply(c(1, 4, 8), function(h) {
 }))
 stopifnot(identical(as.integer(table(schedule$horizon)), c(80L, 77L, 73L)),
           !anyDuplicated(schedule[c("origin", "horizon")]))
-save_csv(schedule, "forecast_schedule.csv")
 schedule_summary <- do.call(rbind, lapply(split(schedule, schedule$horizon), function(x) {
   data.frame(Horizon = x$horizon[1], `First origin` = x$origin[1],
              `Last origin` = tail(x$origin, 1), `First target` = x$target_quarter[1],
@@ -215,7 +218,60 @@ model, with no missing or duplicate origin-horizon pairs.
 
 \newpage
 
-# Step 3: Models 4 and 7
+# Step 3: Core forecasting models
+
+All seven models run through the shared harness in one place. Each model file
+in `R/` supplies its functions, and the list below gives the labels used in
+every results table. A model is skipped until its function exists.
+
+```{r}
+#| label: run-all-models
+#| results: hide
+model_fns <- c(
+  "Random walk"    = "model_rw",
+  "4Q average"     = "model_4q",
+  "AR(p)"          = "model_ar",
+  "Direct AR"      = "direct_ar_model",
+  "Gap AR"         = "model_gap_ar",
+  "Fixed gap"      = "model_gap_fixed",
+  "Phillips curve" = "phillips_model"
+)
+available <- model_fns[vapply(model_fns, exists, logical(1))]
+models <- lapply(available, get)
+
+results <- run_harness(q, models)
+check_counts(results)
+
+# frozen forecasts: saved once, before any evaluation
+dir.create("results", showWarnings = FALSE)
+results |>
+  mutate(across(c(origin, target), format)) |>
+  write.csv("results/forecasts.csv", row.names = FALSE)
+```
+
+## Model 1: Random walk
+
+<!-- Chandra: model_rw() in R/03_models_chandra.R, plus a short description -->
+
+## Model 2: Four-quarter-average benchmark
+
+<!-- Chandra: model_4q() in R/03_models_chandra.R, plus a short description -->
+
+## Model 3: AR(p)
+
+<!-- Jana: description of model_ar() -->
+
+## Local mean by simple exponential smoothing
+
+<!-- Jana: description of calc_local_mean() -->
+
+## Model 5: Gap AR
+
+<!-- Jana: description of model_gap_ar() -->
+
+## Model 6: Fixed-persistence gap forecast
+
+<!-- Jana: description of model_gap_fixed() -->
 
 ## Model 4: Direct AR
 
@@ -250,11 +306,14 @@ alignment and lag-selection rules identical.
 
 ```{r}
 #| label: first-origin
-first_fc <- own_forecasts |>
-  filter(origin == yearquarter("1999 Q4")) |>
-  left_join(lag_choices, by = c("model", "origin", "h", "target")) |>
-  mutate(model = ifelse(model == "direct_ar", "Direct AR", "Phillips curve"),
-         target = format(target)) |>
+train_1999 <- q |> as_tibble() |> filter(qtr <= yearquarter("1999 Q4"))
+first_fc <- results |>
+  filter(origin == yearquarter("1999 Q4"),
+         model %in% c("Direct AR", "Phillips curve")) |>
+  rowwise() |>
+  mutate(p = fit_direct(train_1999, h, unemployment = model == "Phillips curve")$p) |>
+  ungroup() |>
+  mutate(target = format(target)) |>
   select(model, h, target, p, forecast)
 knitr::kable(first_fc, digits = 3, booktabs = TRUE,
              col.names = c("Model", "Horizon", "Target", "Lags", "Forecast"),
@@ -264,6 +323,18 @@ knitr::kable(first_fc, digits = 3, booktabs = TRUE,
 The target is inflation in the indicated single quarter, not average or cumulative
 inflation over the next $h$ quarters. Coefficients and selected lag orders are
 updated as the estimation window expands; the model definitions do not change.
+
+# Step 4: Forecast evaluation
+
+<!-- Odysseus: RMSE, relative RMSE vs. 4Q average, MAE, ME for every model and horizon, from `results` -->
+
+# Step 5: Diagnostics for the leading one-step model
+
+<!-- Dawson: refit the lowest h = 1 RMSE estimated model through 2019Q4; residual plot, ACF, Ljung-Box, variability -->
+
+# Step 6: Summary
+
+<!-- Chandra: lowest-RMSE model per horizon, which models beat the 4Q average, MAE and mean-error patterns -->
 
 ## Sources
 
