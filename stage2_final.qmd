@@ -12,7 +12,7 @@ format:
     number-sections: false
     toc: false
 execute:
-  echo: false
+  echo: true
   warning: false
   message: false
 ---
@@ -21,13 +21,13 @@ execute:
 #| label: setup
 knitr::opts_chunk$set(fig.align = "center", fig.pos = "H")
 library(urca)
+```
 
-# shared data loader and evaluation harness
-source("R/01_data.R")
-source("R/02_harness.R")
+The shared data loader, `R/01_data.R`, builds the quarterly series used throughout.
 
-# every team member's model file: R/03_models_<name>.R
-for (f in list.files("R", pattern = "^03_models_.*\\.R$", full.names = TRUE)) source(f)
+```{r}
+#| label: code-data
+#| file: R/01_data.R
 ```
 
 ```{r}
@@ -159,6 +159,13 @@ At each later origin, I add one quarter, re-estimate the model, and retain
 forecasts at horizons 1, 4, and 8. The final historical target is 2019Q4;
 observations from 2020 onward are reserved for the later project stage.
 
+The shared evaluation harness, `R/02_harness.R`, runs every model through this design.
+
+```{r}
+#| label: code-harness
+#| file: R/02_harness.R
+```
+
 ```{r}
 #| label: forecast-schedule
 first_origin <- match("1999Q4", panel$quarter)
@@ -220,34 +227,7 @@ model, with no missing or duplicate origin-horizon pairs.
 
 # Step 3: Core forecasting models
 
-All seven models run through the shared harness in one place. Each model file
-in `R/` supplies its functions, and the list below gives the labels used in
-every results table. A model is skipped until its function exists.
-
-```{r}
-#| label: run-all-models
-#| results: hide
-model_fns <- c(
-  "Random walk"    = "model_rw",
-  "4Q average"     = "model_4q",
-  "AR(p)"          = "model_ar",
-  "Direct AR"      = "direct_ar_model",
-  "Gap AR"         = "model_gap_ar",
-  "Fixed gap"      = "model_gap_fixed",
-  "Phillips curve" = "phillips_model"
-)
-available <- model_fns[vapply(model_fns, exists, logical(1))]
-models <- lapply(available, get)
-
-results <- run_harness(q, models)
-check_counts(results)
-
-# frozen forecasts: saved once, before any evaluation
-dir.create("results", showWarnings = FALSE)
-results |>
-  mutate(across(c(origin, target), format)) |>
-  write.csv("results/forecasts.csv", row.names = FALSE)
-```
+Each model's functions live in its owner's file in `R/`, shown below in full.
 
 ## Model 1: Random walk
 
@@ -256,6 +236,11 @@ results |>
 ## Model 2: Four-quarter-average benchmark
 
 <!-- Chandra: model_4q() in R/03_models_chandra.R, plus a short description -->
+
+```{r}
+#| label: code-models-chandra
+#| file: !expr if (file.exists("R/03_models_chandra.R")) "R/03_models_chandra.R" else character(0)
+```
 
 ## Model 3: AR(p)
 
@@ -272,6 +257,11 @@ results |>
 ## Model 6: Fixed-persistence gap forecast
 
 <!-- Jana: description of model_gap_fixed() -->
+
+```{r}
+#| label: code-models-jana
+#| file: R/03_models_jana.R
+```
 
 ## Model 4: Direct AR
 
@@ -303,6 +293,41 @@ not unemployment at $T+h$. Both models stay in levels, as the guide specifies.
 The code in `R/03_models_odysseus.R` supplies `direct_ar_model(train)` and
 `phillips_model(train)`. The small shared fitting function keeps their response
 alignment and lag-selection rules identical.
+
+```{r}
+#| label: code-models-odysseus
+#| file: R/03_models_odysseus.R
+```
+
+## Running all models
+
+All seven models run through the shared harness in one place. The list below gives the labels used in
+every results table. A model is skipped until its function exists.
+
+```{r}
+#| label: run-all-models
+#| results: hide
+model_fns <- c(
+  "Random walk"    = "model_rw",
+  "4Q average"     = "model_4q",
+  "AR(p)"          = "model_ar",
+  "Direct AR"      = "direct_ar_model",
+  "Gap AR"         = "model_gap_ar",
+  "Fixed gap"      = "model_gap_fixed",
+  "Phillips curve" = "phillips_model"
+)
+available <- model_fns[vapply(model_fns, exists, logical(1))]
+models <- lapply(available, get)
+
+results <- run_harness(q, models)
+check_counts(results)
+
+# frozen forecasts: saved once, before any evaluation
+dir.create("results", showWarnings = FALSE)
+results |>
+  mutate(across(c(origin, target), format)) |>
+  write.csv("results/forecasts.csv", row.names = FALSE)
+```
 
 ```{r}
 #| label: first-origin
