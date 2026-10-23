@@ -21,6 +21,7 @@ execute:
 #| label: setup
 knitr::opts_chunk$set(fig.align = "center", fig.pos = "H")
 library(urca)
+library(slider)
 ```
 
 The shared data loader, `R/01_data.R`, builds the quarterly series used throughout.
@@ -355,7 +356,176 @@ updated as the estimation window expands; the model definitions do not change.
 
 # Step 5: Diagnostics for the leading one-step model
 
-<!-- Dawson: refit the lowest h = 1 RMSE estimated model through 2019Q4; residual plot, ACF, Ljung-Box, variability -->
+Step 5 checks the residuals of the leading one-step model. We look for
+remaining autocorrelation, unstable variability, and large errors that may
+drive RMSE. As the guide specifies, we select the estimated core model with
+the lowest $h=1$ RMSE. The random-walk, four-quarter-average, and fixed-gap
+forecasts are excluded because they estimate no parameters.
+
+```{r}
+#| label: step5-select
+# lowest h = 1 RMSE among the estimated core models
+h1_rmse <- results |>
+  filter(h == 1 & model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
+  group_by(model) |>
+  summarize(rmse = sqrt(mean(error^2))) |>
+  arrange(rmse)
+h1_rmse
+
+best_model <- h1_rmse |> slice(1) |> pull(model)
+best_model
+```
+
+The gap AR has the lowest one-step RMSE, `r sprintf("%.2f", h1_rmse$rmse[1])`.
+AR(p) and the direct AR follow at `r sprintf("%.2f", h1_rmse$rmse[2])`; they
+produce identical one-step forecasts.
+
+We refit the gap AR on all data through 2019Q4. The local mean is rebuilt
+from this sample, and BIC again selects the gap lag order.
+
+```{r}
+#| label: step5-refit
+# guard: stop if a different model wins the h = 1 comparison
+stopifnot(best_model == "Gap AR")
+
+# all data through 2019Q4
+train_2019 <- q |>
+  as_tibble() |>
+  filter(qtr <= yearquarter("2019 Q4")) |>
+  select(qtr, infl, unrate, tbill)
+
+gap_fit <- fit_gap_ar(train_2019)
+
+gap_fit$p
+summary(gap_fit$fit)
+```
+
+BIC selects `r gap_fit$p` gap lags. The lag coefficients sum to
+`r sprintf("%.2f", sum(coef(gap_fit$fit)[-1]))`, so the gap is persistent but
+reverts toward the local mean. The intercept is near zero, as expected for a
+deviation from the local mean. The residual standard error is
+`r sprintf("%.2f", sigma(gap_fit$fit))` percentage points across
+`r nrow(gap_fit$resid)` residuals.
+
+@fig-step5-resid plots the refit residuals. Well-specified residuals should
+vary around zero without trends or long runs.
+
+```{r}
+#| label: fig-step5-resid
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Gap AR residuals, refit through 2019Q4 (percentage points)."
+resid_ts <- gap_fit$resid |> as_tsibble(index = qtr)
+
+resid_ts |>
+  autoplot(resid) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(x = NULL, y = "Residual (pp)")
+```
+```{r}
+#| label: step5-largest
+# five largest residuals in absolute value
+largest <- resid_ts |>
+  as_tibble() |>
+  slice_max(abs(resid), n = 5) |>
+  mutate(qtr = format(qtr), resid = round(resid, 2))
+knitr::kable(largest, col.names = c("Quarter", "Residual"), booktabs = TRUE)
+```
+
+The residuals center on zero with no visible trend. The largest errors are
+2008Q4, 2005Q3, 2005Q4, 1986Q1, and 1981Q4. Most coincide with energy-price
+shocks: the late-2008 oil collapse, the 2005 gasoline spike and reversal, and
+the 1986 oil-price drop. 1981Q4 falls during the Volcker disinflation. Their
+spread also changes over time, with wider swings in the 1970s to mid-1980s
+and after 2005 than in between.
+
+@fig-step5-acf shows the residual autocorrelations. A Ljung-Box test checks
+whether the first eight are jointly zero, with degrees of freedom reduced by
+the `r gap_fit$p` estimated lag coefficients.
+
+```{r}
+#| label: fig-step5-acf
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Gap AR residual ACF through 20 quarters. Dashed lines are approximate 95% bounds."
+resid_ts |>
+  ACF(resid, lag_max = 20) |>
+  autoplot() +
+  labs(x = "Lag (quarters)", y = "ACF")
+
+lb <- resid_ts |> features(resid, ljung_box, lag = 8, dof = gap_fit$p)
+lb
+```
+
+All 20 autocorrelations fall inside the approximate bounds, and lags 1 to 3
+are close to zero. The Ljung-Box statistic is
+`r sprintf("%.2f", lb$lb_stat)` with `r 8 - gap_fit$p` degrees of freedom
+(p = `r sprintf("%.3f", lb$lb_pvalue)`), so we do not reject the null of no
+autocorrelation through lag 8. For comparison, inflation itself has a lag-1
+autocorrelation of about 0.75 over 1960Q1-1999Q4. The gap AR removes that
+persistence from its errors.
+
+Next we check whether the size of the errors is stable. @fig-step5-sd shows
+a trailing 20-quarter standard deviation of the residuals, and the table
+below compares the residual standard deviation across periods.
+
+```{r}
+#| label: fig-step5-sd
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Trailing 20-quarter standard deviation of the gap AR residuals (percentage points)."
+resid_ts <- resid_ts |>
+  mutate(roll_sd = slide_dbl(resid, sd, .before = 19, .complete = TRUE))
+
+resid_ts |>
+  autoplot(roll_sd) +
+  labs(x = NULL, y = "SD (pp)")
+```
+
+
+```{r}
+#| label: step5-sd-period
+sd_by_period <- resid_ts |>
+  as_tibble() |>
+  mutate(period = case_when(
+    qtr <= yearquarter("1972 Q4") ~ "1960-1972",
+    qtr <= yearquarter("1986 Q4") ~ "1973-1986",
+    qtr <= yearquarter("2004 Q4") ~ "1987-2004",
+    TRUE ~ "2005-2019")) |>
+  group_by(period) |>
+  summarize(quarters = n(), sd = sd(resid), max_abs = max(abs(resid)))
+knitr::kable(sd_by_period, digits = 2, booktabs = TRUE,
+             col.names = c("Period", "Quarters", "Residual SD", "Largest |residual|"))
+```
+
+The residual standard deviation is not constant. It is about
+`r sprintf("%.1f", sd_by_period$sd[1])` in 1960-1972 and
+`r sprintf("%.1f", sd_by_period$sd[3])` in 1987-2004, but
+`r sprintf("%.1f", sd_by_period$sd[2])` in 1973-1986 and
+`r sprintf("%.1f", sd_by_period$sd[4])` in 2005-2019. The flat peak from 2008
+to 2013 in @fig-step5-sd comes from 2008Q4 alone: it raises the trailing
+standard deviation until it leaves the 20-quarter window.
+
+```{r}
+#| label: step5-influence
+gap_h1 <- results |> filter(model == "Gap AR", h == 1)
+influence <- tibble(
+  Measure = c("RMSE, all 80 targets", "RMSE, excluding 2008Q4", "MAE, all 80 targets"),
+  Value = c(sqrt(mean(gap_h1$error^2)),
+            sqrt(mean(gap_h1$error[gap_h1$target != yearquarter("2008 Q4")]^2)),
+            mean(abs(gap_h1$error))))
+knitr::kable(influence, digits = 2, booktabs = TRUE)
+```
+
+The out-of-sample forecast errors show the same sensitivity. Dropping 2008Q4,
+one of 80 targets, lowers the gap AR's one-step RMSE from
+`r sprintf("%.2f", influence$Value[1])` to `r sprintf("%.2f", influence$Value[2])`.
+Its MAE is `r sprintf("%.2f", influence$Value[3])`, well below RMSE.
+
+Overall, the gap AR leaves no detectable autocorrelation in its errors, but
+their variance changes across periods and a few energy-driven shocks dominate
+its RMSE. Small RMSE differences between models in Step 4 should therefore be
+read with care.
 
 # Step 6: Summary
 
