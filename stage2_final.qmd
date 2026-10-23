@@ -352,7 +352,122 @@ updated as the estimation window expands; the model definitions do not change.
 
 # Step 4: Forecast evaluation
 
-<!-- Odysseus: RMSE, relative RMSE vs. 4Q average, MAE, ME for every model and horizon, from `results` -->
+## Provisional comparison of Models 3-7
+
+The five available models are compared below. The random-walk and
+four-quarter-average models are not yet included, so relative RMSE is
+unavailable. These results do not establish which models beat the required
+four-quarter-average benchmark.
+
+We use the saved forecasts in `results` from Step 3, without fitting the models
+again. All models have the same target quarters within each horizon: 80 at
+$h=1$, 77 at $h=4$, and 73 at $h=8$, following the schedule in Step 2.
+With $e_t=\pi_t-\hat\pi_t$, we calculate
+$\mathrm{RMSE}=\sqrt{\operatorname{mean}(e_t^2)}$,
+$\mathrm{MAE}=\operatorname{mean}(|e_t|)$, and
+$\mathrm{ME}=\operatorname{mean}(e_t)$. These are in percentage points of
+annualized inflation; negative mean error indicates overprediction.
+Relative RMSE divides a model's RMSE by the four-quarter-average RMSE at
+the same horizon. RMSE is the primary ranking measure.
+
+```{r}
+#| label: code-evaluation-odysseus
+#| file: R/04_evaluation_odysseus.R
+```
+
+```{r}
+#| label: step4-scores
+benchmark <- if ("4Q average" %in% results$model) "4Q average" else NULL
+scores <- evaluate_forecasts(results, benchmark = benchmark)
+write.csv(scores, "results/scores.csv", row.names = FALSE)
+options(knitr.kable.NA = "--")
+knitr::kable(scores, digits = 3, booktabs = TRUE,
+  col.names = c("Model", "h", "n", "RMSE", "Relative RMSE", "MAE", "Mean error"),
+  caption = "Provisional forecast accuracy for Models 3-7, ordered by RMSE within horizon.")
+```
+
+The dashes denote unavailable relative RMSE, not zero.
+
+## Results by horizon
+
+At $h=1$, fixed gap has the lowest RMSE (3.002), followed by gap AR (3.057).
+Their MAEs are very close, 1.873 and 1.878. AR(p) and direct AR give identical
+one-step forecasts, as expected from their matching regression and lag-selection
+rules at this horizon. The Phillips curve has slightly higher RMSE and MAE
+than direct AR.
+
+At $h=4$, fixed gap again has the lowest RMSE and MAE (2.726 and 1.617),
+followed by gap AR. Iterated AR(p) does better than direct AR, while adding
+unemployment to direct AR does not improve either error measure.
+
+At $h=8$, fixed gap remains lowest on both measures (RMSE 2.781; MAE 1.688),
+with gap AR second. All five models overpredict on average. The mean errors
+are -0.370 and -0.430 for the two gap models, compared with -1.440 for direct AR
+and -1.553 for the Phillips curve.
+
+Fixed gap therefore leads the five-model comparison at every horizon. Among
+the models with estimated coefficients, gap AR has the lowest one-step RMSE;
+this is why Step 5 diagnoses gap AR rather than fixed gap, whose persistence
+is imposed at 0.46. These are descriptive rankings, not significance tests.
+The Phillips-curve result applies to this specification and sample, not to the
+usefulness of unemployment in general. Different horizons have different target
+periods, so lower RMSE at a longer horizon does not imply that forecasting
+further ahead is easier.
+
+```{r}
+#| label: step4-plot-setup
+plot_data <- scores |>
+  select(model, h, RMSE, MAE) |>
+  pivot_longer(c(RMSE, MAE), names_to = "Metric", values_to = "Error") |>
+  mutate(model = factor(model, levels = rev(names(models))))
+accuracy_plot <- function(horizon) {
+  ggplot(filter(plot_data, h == horizon),
+         aes(Error, model, colour = Metric, shape = Metric)) +
+    geom_point(size = 2.5) +
+    scale_colour_manual(values = c(MAE = "#4477AA", RMSE = "#AA3377")) +
+    scale_x_continuous(limits = c(0, ceiling(max(plot_data$Error)))) +
+    labs(x = "Error (percentage points of annualized inflation)", y = NULL,
+         title = paste0("h = ", horizon,
+                        if (horizon == 1) " quarter ahead" else " quarters ahead")) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", plot.title = element_text(face = "plain"))
+}
+```
+
+```{r}
+#| label: fig-step4-h1
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "One-quarter-ahead accuracy on the common 80-quarter target sample."
+accuracy_plot(1)
+```
+
+```{r}
+#| label: fig-step4-h4
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "Four-quarter-ahead accuracy on the common 77-quarter target sample."
+accuracy_plot(4)
+```
+
+\newpage
+
+```{r}
+#| label: fig-step4-h8
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "Eight-quarter-ahead accuracy on the common 73-quarter target sample."
+accuracy_plot(8)
+```
+
+The plots share a horizontal scale. RMSE and MAE give the same model ordering
+at each horizon, including the one-step AR(p)/direct AR tie. RMSE exceeds MAE
+for every model, reflecting its greater weight on large errors. The largest
+absolute forecast error occurs in 2008Q4 for every model and horizon. That
+quarter remains in the main comparison; the sensitivity check in Step 5 does
+not change the assigned evaluation sample.
+
+\newpage
 
 # Step 5: Diagnostics for the leading one-step model
 
@@ -533,11 +648,14 @@ read with care.
 
 ## Sources
 
-- W271, *Forecasting U.S. Inflation: Project Guide*, Stage 2, Steps 1-3;
+- W271, *Forecasting U.S. Inflation: Project Guide*, Stage 2, Steps 1-4;
   my Stage 1 report; and the team's shared data loader and forecast harness.
 - Hyndman and Athanasopoulos, *Forecasting: Principles and Practice*,
   [stationarity](https://otexts.com/fpp3/stationarity.html) and
   [time-series cross-validation](https://otexts.com/fpp3/toolbox.html#time-series-cross-validation).
+- W271 Week 4 Session 2 (forecast accuracy) and Week 8 Session 1 (simple
+  exponential smoothing); Hyndman and Athanasopoulos,
+  [evaluating point forecast accuracy](https://otexts.com/fpp3/toolbox.html#sec-accuracy).
 - R `urca` documentation for
   [ADF](https://search.r-project.org/CRAN/refmans/urca/html/ur.df.html) and
   [KPSS](https://search.r-project.org/CRAN/refmans/urca/html/ur.kpss.html).
