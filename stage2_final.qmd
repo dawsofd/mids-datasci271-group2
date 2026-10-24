@@ -246,19 +246,53 @@ source(here::here("R", "03_models_chandra.R"))
 
 ## Model 3: AR(p)
 
-<!-- Jana: description of model_ar() -->
+At each forecast origin $T$, we estimate an autoregressive model with an intercept for next-quarter inflation:
+
+$$\pi_t = c + \sum_{j=1}^p \phi_j \pi_{t-j} + \varepsilon_t$$
+
+Candidate lag orders $p \in \{1, 2, 3, 4\}$ are evaluated using BIC on a common sample starting at the fifth training quarter ($t=5$), ensuring that each candidate order model is compared over an identical set of response observations. We then refit the selected order on all available historical rows for that $p$ .
+
+Point forecasts through horizon $h=8$ are generated iteratively using the same estimated coefficients:
+
+$$\widehat{\pi}_{T+k \mid T} = c + \sum_{j=1}^p \phi_j \widehat{\pi}_{T+k-j \mid T}, \quad k = 1, \dots, 8,$$
+
+where unobserved future values are replaced by earlier iterative forecasts. If stationary, the model implies a fixed long-run mean $\mu = c / (1 - \sum \phi_j)$. The code in `R/03_models_jana.R` provides `model_ar(train)` for and `fit_ar(train)`.
 
 ## Local mean by simple exponential smoothing
 
-<!-- Jana: description of calc_local_mean() -->
+Following Faust and Wright (2013, Section 4.4.5), we construct a time-varying local mean $\tau_t$ using simple exponential smoothing with a fixed parameter $\alpha = 0.05$ (95% weight on the previous local mean and 5% weight on current inflation):
+
+$$\tau_{1960Q1} = \pi_{1960Q1}, \qquad \tau_t = 0.95 \tau_{t-1} + 0.05 \pi_t \quad (t > 1).$$
+
+The calculation is strictly one-sided: at origin $T$, the local mean $\tau_T$ depends only on inflation observed through quarter $T$ and uses no future observations. The inflation gap $g_t$ measures the deviation of observed inflation from this slow-moving trend:
+
+$$g_t = \pi_t - \tau_t.$$
+
+This transformation is implemented in `calc_local_mean(infl, alpha = 0.05)` and serves as the foundation for Models 5 and 6.
 
 ## Model 5: Gap AR
 
-<!-- Jana: description of model_gap_ar() -->
+The gap AR model recenters inflation around the slow-moving local mean by estimating an autoregression on the stationary inflation gap $g_t$:
+
+$$g_t = a + \sum_{j=1}^p \rho_j g_{t-j} + v_t.$$
+
+At each origin $T$, lag length $p \in \{1, 2, 3, 4\}$ is selected by BIC on the common sample ($t=5, \dots, T$) and refit on all available historical gap observations, similar to the procedure described for Model 3. Forecasts of the gap $\widehat{g}_{T+h \mid T}$ are generated iteratively through eight quarters.
+
+The future local mean is held constant at $\tau_T$, as future inflation rates needed to update it are not yet available. The final inflation forecast adds the origin local mean back to the gap forecast:
+
+$$\widehat{\pi}^{GAP}_{T+h \mid T} = \tau_T + \widehat{g}_{T+h \mid T}.$$
+
+Comparison with the standard AR($p$) model examines whether filtering out low-frequency shifts in trend inflation improves forecast accuracy. The model is implemented in `model_gap_ar(train)` and `fit_gap_ar(train)`.
 
 ## Model 6: Fixed-persistence gap forecast
 
-<!-- Jana: description of model_gap_fixed() -->
+Model 6 adopts the restricted specification from Faust and Wright (2013, Section 4.4.7), which eliminates parameter estimation uncertainty by imposing a fixed persistence value of 0.46:
+
+$$\widehat{\pi}^{FIX}_{T+h \mid T} = \tau_T + 0.46^h g_T.$$
+
+Here, $g_T = \pi_T - \tau_T$ is the inflation gap observed at origin $T$. As the forecast horizon $h$ extends, the gap component decays geometrically ($0.46^1 = 0.46$, $0.46^4 \approx 0.045$, $0.46^8 \approx 0.002$), smoothly pulling the forecast back toward the current local mean $\tau_T$.
+
+In this model no parameters are estimated, eliminating sample estimation error entirely. Comparing Model 6 with Model 5 tests whether estimating additional persistence parameters provides sufficient forecasting benefit to compensate for parameter estimation uncertainty. This model is implemented in `model_gap_fixed(train)`.
 
 ```{r}
 #| label: code-models-jana
