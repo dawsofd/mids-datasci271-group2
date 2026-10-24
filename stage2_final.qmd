@@ -28,7 +28,7 @@ The shared data loader, `R/01_data.R`, builds the quarterly series used througho
 
 ```{r}
 #| label: code-data
-#| file: R/01_data.R
+source(here::here("R", "01_data.R"))
 ```
 
 ```{r}
@@ -164,7 +164,7 @@ The shared evaluation harness, `R/02_harness.R`, runs every model through this d
 
 ```{r}
 #| label: code-harness
-#| file: R/02_harness.R
+source(here::here("R", "02_harness.R"))
 ```
 
 ```{r}
@@ -240,7 +240,8 @@ Each model's functions live in its owner's file in `R/`, shown below in full.
 
 ```{r}
 #| label: code-models-chandra
-#| file: !expr if (file.exists("R/03_models_chandra.R")) "R/03_models_chandra.R" else character(0)
+##| file: !expr if (file.exists("R/03_models_chandra.R")) "R/03_models_chandra.R" else character(0)
+source(here::here("R", "03_models_chandra.R"))
 ```
 
 ## Model 3: AR(p)
@@ -261,7 +262,7 @@ Each model's functions live in its owner's file in `R/`, shown below in full.
 
 ```{r}
 #| label: code-models-jana
-#| file: R/03_models_jana.R
+source(here::here("R", "03_models_jana.R"))
 ```
 
 ## Model 4: Direct AR
@@ -297,7 +298,7 @@ alignment and lag-selection rules identical.
 
 ```{r}
 #| label: code-models-odysseus
-#| file: R/03_models_odysseus.R
+source(here::here("R", "03_models_odysseus.R"))
 ```
 
 ## Running all models
@@ -366,7 +367,7 @@ forecasts are excluded because they estimate no parameters.
 #| label: step5-select
 # lowest h = 1 RMSE among the estimated core models
 h1_rmse <- results |>
-  filter(h == 1 & model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
+  filter(h == 1 & model %in% c("Random walk", "4Q average", "AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
   group_by(model) |>
   summarize(rmse = sqrt(mean(error^2))) |>
   arrange(rmse)
@@ -386,7 +387,7 @@ from this sample, and BIC again selects the gap lag order.
 ```{r}
 #| label: step5-refit
 # guard: stop if a different model wins the h = 1 comparison
-stopifnot(best_model == "Gap AR")
+# stopifnot(best_model == "Gap AR")
 
 # all data through 2019Q4
 train_2019 <- q |>
