@@ -32,6 +32,7 @@ throughout.
 
 ```{r}
 #| label: code-data
+#| file: !expr if (file.exists("R/01_data.R")) "R/01_data.R" else character(0)
 source(here::here("R", "01_data.R"))
 ```
 
@@ -175,6 +176,7 @@ through this design.
 
 ```{r}
 #| label: code-harness
+#| file: !expr if (file.exists("R/02_harness.R")) "R/02_harness.R" else character(0)
 source(here::here("R", "02_harness.R"))
 ```
 
@@ -245,17 +247,19 @@ or duplicate origin-horizon pairs.
 Each model's functions live in its owner's file in `R/`, shown below in
 full.
 
+## 
+
 ## Model 1: Random Walk (Without Drift)
 
 At forecast origin $T$, I generate point forecasts using a random walk
 model without drift:
 
-$$\pi_{t} = \pi_{t-1} + \varepsilon_t, \qquad E(\varepsilon_t) = 0, \qquad \operatorname{Var}(\varepsilon_t) = \sigma_\varepsilon^2$$
+$$ \pi_{t} = \pi_{t-1} + \varepsilon_t, \qquad E(\varepsilon_t) = 0, \qquad \operatorname{Var}(\varepsilon_t) = \sigma_\varepsilon^2 $$
 
 The $h$-step-ahead point forecast is set to the most recent observed
 inflation rate:
 
-$$\widehat{\pi}_{T+h \mid T}^{\mathrm{RW}} = \pi_T$$
+$$ \widehat{\pi}_{T+h \mid T}^{\mathrm{RW}} = \pi_T $$
 
 The function verifies that the training sample contains valid finite
 observations and repeats this value to produce point forecasts for
@@ -266,7 +270,7 @@ horizons $h \in \{1, 4, 8\}$. No estimation or iteration is required.
 At forecast origin $T$, I compute point forecasts as the sample average
 of the four most recently observed inflation rates:
 
-$$\widehat{\pi}_{T+h \mid T}^{\mathrm{4Q}} = \frac{1}{4} \sum_{j=0}^{3} \pi_{T-j}$$
+$$ \widehat{\pi}_{T+h \mid T}^{\mathrm{4Q}} = \frac{1}{4} \sum_{j=0}^{3} \pi_{T-j} $$
 
 The function verifies that the training sample contains at least four
 finite observations, extracts the four most recent values, and
@@ -281,22 +285,94 @@ source(here::here("R", "03_models_chandra.R"))
 
 ## Model 3: AR(p)
 
-<!-- Jana: description of model_ar() -->
+At each forecast origin $T$, we estimate an autoregressive model with an
+intercept for next-quarter inflation:
+
+$$\pi_t = c + \sum_{j=1}^p \phi_j \pi_{t-j} + \varepsilon_t$$
+
+Candidate lag orders $p \in \{1, 2, 3, 4\}$ are evaluated using BIC on a
+common sample starting at the fifth training quarter ($t=5$), ensuring
+that each candidate order model is compared over an identical set of
+response observations. We then refit the selected order on all available
+historical rows for that $p$ .
+
+Point forecasts through horizon $h=8$ are generated iteratively using
+the same estimated coefficients:
+
+$$\widehat{\pi}_{T+k \mid T} = c + \sum_{j=1}^p \phi_j \widehat{\pi}_{T+k-j \mid T}, \quad k = 1, \dots, 8,$$
+
+where unobserved future values are replaced by earlier iterative
+forecasts. If stationary, the model implies a fixed long-run mean
+$\mu = c / (1 - \sum \phi_j)$. The code in `R/03_models_jana.R` provides
+`model_ar(train)` for and `fit_ar(train)`.
 
 ## Local mean by simple exponential smoothing
 
-<!-- Jana: description of calc_local_mean() -->
+Following Faust and Wright (2013, Section 4.4.5), we construct a
+time-varying local mean $\tau_t$ using simple exponential smoothing with
+a fixed parameter $\alpha = 0.05$ (95% weight on the previous local mean
+and 5% weight on current inflation):
+
+$$\tau_{1960Q1} = \pi_{1960Q1}, \qquad \tau_t = 0.95 \tau_{t-1} + 0.05 \pi_t \quad (t > 1).$$
+
+The calculation is strictly one-sided: at origin $T$, the local mean
+$\tau_T$ depends only on inflation observed through quarter $T$ and uses
+no future observations. The inflation gap $g_t$ measures the deviation
+of observed inflation from this slow-moving trend:
+
+$$g_t = \pi_t - \tau_t.$$
+
+This transformation is implemented in
+`calc_local_mean(infl, alpha = 0.05)` and serves as the foundation for
+Models 5 and 6.
 
 ## Model 5: Gap AR
 
-<!-- Jana: description of model_gap_ar() -->
+The gap AR model recenters inflation around the slow-moving local mean
+by estimating an autoregression on the stationary inflation gap $g_t$:
+
+$$g_t = a + \sum_{j=1}^p \rho_j g_{t-j} + v_t.$$
+
+At each origin $T$, lag length $p \in \{1, 2, 3, 4\}$ is selected by BIC
+on the common sample ($t=5, \dots, T$) and refit on all available
+historical gap observations, similar to the procedure described for
+Model 3. Forecasts of the gap $\widehat{g}_{T+h \mid T}$ are generated
+iteratively through eight quarters.
+
+The future local mean is held constant at $\tau_T$, as future inflation
+rates needed to update it are not yet available. The final inflation
+forecast adds the origin local mean back to the gap forecast:
+
+$$\widehat{\pi}^{GAP}_{T+h \mid T} = \tau_T + \widehat{g}_{T+h \mid T}.$$
+
+Comparison with the standard AR($p$) model examines whether filtering
+out low-frequency shifts in trend inflation improves forecast accuracy.
+The model is implemented in `model_gap_ar(train)` and
+`fit_gap_ar(train)`.
 
 ## Model 6: Fixed-persistence gap forecast
 
-<!-- Jana: description of model_gap_fixed() -->
+Model 6 adopts the restricted specification from Faust and Wright (2013,
+Section 4.4.7), which eliminates parameter estimation uncertainty by
+imposing a fixed persistence value of 0.46:
+
+$$\widehat{\pi}^{FIX}_{T+h \mid T} = \tau_T + 0.46^h g_T.$$
+
+Here, $g_T = \pi_T - \tau_T$ is the inflation gap observed at origin
+$T$. As the forecast horizon $h$ extends, the gap component decays
+geometrically ($0.46^1 = 0.46$, $0.46^4 \approx 0.045$,
+$0.46^8 \approx 0.002$), smoothly pulling the forecast back toward the
+current local mean $\tau_T$.
+
+In this model no parameters are estimated, eliminating sample estimation
+error entirely. Comparing Model 6 with Model 5 tests whether estimating
+additional persistence parameters provides sufficient forecasting
+benefit to compensate for parameter estimation uncertainty. This model
+is implemented in `model_gap_fixed(train)`.
 
 ```{r}
 #| label: code-models-jana
+#| file: !expr if (file.exists("R/03_models_jana.R")) "R/03_models_jana.R" else character(0)
 source(here::here("R", "03_models_jana.R"))
 ```
 
@@ -333,6 +409,7 @@ their response alignment and lag-selection rules identical.
 
 ```{r}
 #| label: code-models-odysseus
+#| file: !expr if (file.exists("R/03_models_odysseus.R")) "R/03_models_odysseus.R" else character(0)
 source(here::here("R", "03_models_odysseus.R"))
 ```
 
@@ -390,7 +467,121 @@ model definitions do not change.
 
 # Step 4: Forecast evaluation
 
-<!-- Odysseus: RMSE, relative RMSE vs. 4Q average, MAE, ME for every model and horizon, from `results` -->
+## Provisional comparison of Models 3-7
+
+We use the saved forecasts in `results` from Step 3, without fitting the
+models again. All models have the same target quarters within each
+horizon: 80 at $h=1$, 77 at $h=4$, and 73 at $h=8$, following the
+schedule in Step 2. With $e_t=\pi_t-\hat\pi_t$, we calculate
+$\mathrm{RMSE}=\sqrt{\operatorname{mean}(e_t^2)}$,
+$\mathrm{MAE}=\operatorname{mean}(|e_t|)$, and
+$\mathrm{ME}=\operatorname{mean}(e_t)$. These are in percentage points
+of annualized inflation; negative mean error indicates overprediction.
+Relative RMSE divides a model's RMSE by the four-quarter-average RMSE at
+the same horizon. RMSE is the primary ranking measure.
+
+```{r}
+#| label: code-evaluation-odysseus
+#| file: !expr if (file.exists("R/04_evaluation_odysseus.R")) "R/04_evaluation_odysseus.R" else character(0)
+source(here::here("R", "04_evaluation_odysseus.R"))
+```
+
+```{r}
+#| label: step4-scores
+benchmark <- if ("4Q average" %in% results$model) "4Q average" else NULL
+scores <- evaluate_forecasts(results, benchmark = benchmark)
+write.csv(scores, "results/scores.csv", row.names = FALSE)
+options(knitr.kable.NA = "--")
+knitr::kable(scores, digits = 3, booktabs = TRUE,
+  col.names = c("Model", "h", "n", "RMSE", "Relative RMSE", "MAE", "Mean error"),
+  caption = "Provisional forecast accuracy for Models 3-7, ordered by RMSE within horizon.")
+```
+
+The dashes denote unavailable relative RMSE, not zero.
+
+## Results by horizon
+
+At $h=1$, fixed gap has the lowest RMSE (3.002), followed by 4Q average
+AR (3.039). Their MAEs are the same, 1.873. AR(p) and direct AR give
+identical one-step forecasts, as expected from their matching regression
+and lag-selection rules at this horizon. The Phillips curve has slightly
+higher RMSE and MAE than direct AR.
+
+At $h=4$, fixed gap again has the lowest RMSE and MAE (2.726 and 1.617),
+followed by gap AR. The 4Q average ranks third in performance at $h=4$.
+Iterated AR(p) does better than direct AR, while adding unemployment to
+direct AR does not improve either error measure.
+
+At $h=8$, fixed gap remains lowest on both measures (RMSE 2.781; MAE
+1.688), with gap AR second. All five models overpredict on average. The
+mean errors are -0.370 and -0.430 for the two gap models, compared with
+-1.440 for direct AR and -1.553 for the Phillips curve.
+
+Fixed gap therefore leads the five-model comparison at every horizon.
+Among the models with estimated coefficients, gap AR has the lowest
+one-step RMSE; this is why Step 5 diagnoses gap AR rather than fixed
+gap, whose persistence is imposed at 0.46. These are descriptive
+rankings, not significance tests. The Phillips-curve result applies to
+this specification and sample, not to the usefulness of unemployment in
+general. Different horizons have different target periods, so lower RMSE
+at a longer horizon does not imply that forecasting further ahead is
+easier.
+
+```{r}
+#| label: step4-plot-setup
+plot_data <- scores |>
+  select(model, h, RMSE, MAE) |>
+  pivot_longer(c(RMSE, MAE), names_to = "Metric", values_to = "Error") |>
+  mutate(model = factor(model, levels = rev(names(models))))
+accuracy_plot <- function(horizon) {
+  ggplot(filter(plot_data, h == horizon),
+         aes(Error, model, colour = Metric, shape = Metric)) +
+    geom_point(size = 2.5) +
+    scale_colour_manual(values = c(MAE = "#4477AA", RMSE = "#AA3377")) +
+    scale_x_continuous(limits = c(0, ceiling(max(plot_data$Error)))) +
+    labs(x = "Error (percentage points of annualized inflation)", y = NULL,
+         title = paste0("h = ", horizon,
+                        if (horizon == 1) " quarter ahead" else " quarters ahead")) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", plot.title = element_text(face = "plain"))
+}
+```
+
+```{r}
+#| label: fig-step4-h1
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "One-quarter-ahead accuracy on the common 80-quarter target sample."
+accuracy_plot(1)
+```
+
+```{r}
+#| label: fig-step4-h4
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "Four-quarter-ahead accuracy on the common 77-quarter target sample."
+accuracy_plot(4)
+```
+
+\newpage
+
+```{r}
+#| label: fig-step4-h8
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "Eight-quarter-ahead accuracy on the common 73-quarter target sample."
+accuracy_plot(8)
+```
+
+The plots share a horizontal scale. RMSE and MAE give the same model
+ordering at each horizon, including the one-step AR(p)/direct AR tie.
+RMSE exceeds MAE for every model, reflecting its greater weight on large
+errors. The largest absolute forecast error occurs in 2008Q4 for every
+model and horizon. That quarter remains in the main comparison; the
+sensitivity check in Step 5 does not change the assigned evaluation
+sample.
+
+\newpage
 
 # Step 5: Diagnostics for the leading one-step model
 
@@ -405,7 +596,8 @@ parameters.
 #| label: step5-select
 # lowest h = 1 RMSE among the estimated core models
 h1_rmse <- results |>
-  filter(h == 1 & model %in% c("Random walk", "4Q average", "AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
+  filter(h == 1 & model %in% c("Random walk", "4Q average", "AR(p)", 
+                               "Direct AR", "Gap AR", "Phillips curve")) |>
   group_by(model) |>
   summarize(rmse = sqrt(mean(error^2))) |>
   arrange(rmse)
@@ -570,17 +762,35 @@ should therefore be read with care.
 
 # Step 6: Summary
 
-<!-- Chandra: lowest-RMSE model per horizon, which models beat the 4Q average, MAE and mean-error patterns -->
+Based on Table 2 and the horizon results in the provided document:
+
+- Lowest-RMSE model by horizon: The Fixed gap model achieves the lowest
+  RMSE across all three evaluation horizons ($h=1$: 3.002, $h=4$: 2.726,
+  $h=8$: 2.781).
+
+- Models outperforming the benchmark: At $h=1$, only the Fixed gap model
+  achieves a lower RMSE than the four-quarter-average benchmark. At
+  $h=4$ and $h=8$, both the Fixed gap and Gap AR models achieve lower
+  RMSEs than the four-quarter-average benchmark.
+
+- Main patterns in MAE and Mean Error: MAE closely tracks the RMSE model
+  rankings at each horizon, with the lowest MAE occurring at $h=4$. Mean
+  error is negative across almost all models and horizons—worsening
+  significantly at longer horizons—indicating persistent systemic
+  overprediction of inflation during the evaluation period.
 
 ## Sources
 
-- W271, *Forecasting U.S. Inflation: Project Guide*, Stage 2, Steps 1-3;
+- W271, *Forecasting U.S. Inflation: Project Guide*, Stage 2, Steps 1-4;
   my Stage 1 report; and the team's shared data loader and forecast
   harness.
 - Hyndman and Athanasopoulos, *Forecasting: Principles and Practice*,
   [stationarity](https://otexts.com/fpp3/stationarity.html) and
   [time-series
   cross-validation](https://otexts.com/fpp3/toolbox.html#time-series-cross-validation).
+- W271 Week 4 Session 2 (forecast accuracy) and Week 8 Session 1 (simple
+  exponential smoothing); Hyndman and Athanasopoulos, [evaluating point
+  forecast accuracy](https://otexts.com/fpp3/toolbox.html#sec-accuracy).
 - R `urca` documentation for
   [ADF](https://search.r-project.org/CRAN/refmans/urca/html/ur.df.html)
   and
