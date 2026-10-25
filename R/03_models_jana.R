@@ -6,7 +6,8 @@ library(dplyr)
 library(tibble)
 
 
-### Helper Function: Fit different orders of AR models and select the best candidate based on mid BIC
+### Helper Function: Fit different orders of AR models
+# and select the best candidate based on mid BIC
 # Estimates y_t = c + sum_{j=1}^p phi_j y_{t-j} + eps_t for p in 1:max_p.
 # Candidate orders p in 1:4 are compared via BIC on a common sample (starting at
 # t = max_p + 1), then the selected order is refit on all rows available for that p.
@@ -116,7 +117,8 @@ calc_local_mean <- function(infl, alpha = 0.05) {
 # Model: g_t = a + sum_{j=1}^p rho_j * g_{t-j} + v_t, p in {1,2,3,4} by BIC.
 # Forecast: pi_hat_{T+h|T} = tau_T + g_hat_{T+h|T}
 
-# Function to fit the best model with order p for Model 4 using the smoothing of the local mean to calculate the gap
+# Function to fit the best model with order p for Model 4
+# using the smoothing of the local mean to calculate the gap
 fit_gap_ar <- function(train) {
   tau <- calc_local_mean(train$infl, alpha = 0.05)
   gap <- train$infl - tau

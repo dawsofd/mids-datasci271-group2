@@ -28,7 +28,7 @@ The shared data loader, `R/01_data.R`, builds the quarterly series used througho
 
 ```{r}
 #| label: code-data
-source(here::here("R", "01_data.R"))
+#| file: R/01_data.R
 ```
 
 ```{r}
@@ -164,7 +164,7 @@ The shared evaluation harness, `R/02_harness.R`, runs every model through this d
 
 ```{r}
 #| label: code-harness
-source(here::here("R", "02_harness.R"))
+#| file: R/02_harness.R
 ```
 
 ```{r}
@@ -240,8 +240,7 @@ Each model's functions live in its owner's file in `R/`, shown below in full.
 
 ```{r}
 #| label: code-models-chandra
-##| file: !expr if (file.exists("R/03_models_chandra.R")) "R/03_models_chandra.R" else character(0)
-source(here::here("R", "03_models_chandra.R"))
+#| file: R/03_models_chandra.R
 ```
 
 ## Model 3: AR(p)
@@ -296,7 +295,7 @@ In this model no parameters are estimated, eliminating sample estimation error e
 
 ```{r}
 #| label: code-models-jana
-source(here::here("R", "03_models_jana.R"))
+#| file: R/03_models_jana.R
 ```
 
 ## Model 4: Direct AR
@@ -332,13 +331,13 @@ alignment and lag-selection rules identical.
 
 ```{r}
 #| label: code-models-odysseus
-source(here::here("R", "03_models_odysseus.R"))
+#| file: R/03_models_odysseus.R
 ```
 
 ## Running all models
 
 All seven models run through the shared harness in one place. The list below gives the labels used in
-every results table. A model is skipped until its function exists.
+every results table. All seven functions must be available before running the comparison.
 
 ```{r}
 #| label: run-all-models
@@ -352,8 +351,8 @@ model_fns <- c(
   "Fixed gap"      = "model_gap_fixed",
   "Phillips curve" = "phillips_model"
 )
-available <- model_fns[vapply(model_fns, exists, logical(1))]
-models <- lapply(available, get)
+stopifnot(all(vapply(model_fns, exists, logical(1))))
+models <- lapply(model_fns, get)
 
 results <- run_harness(q, models)
 check_counts(results)
@@ -387,7 +386,7 @@ updated as the estimation window expands; the model definitions do not change.
 
 # Step 4: Forecast evaluation
 
-## Provisional comparison of Models 3-7
+## Comparison of all seven models
 
 
 We use the saved forecasts in `results` from Step 3, without fitting the models
@@ -403,37 +402,35 @@ the same horizon. RMSE is the primary ranking measure.
 
 ```{r}
 #| label: code-evaluation-odysseus
-#| source(here::here("R", "04_evaluation_odysseus.R"))
+#| file: R/04_evaluation_odysseus.R
 ```
 
 ```{r}
 #| label: step4-scores
-benchmark <- if ("4Q average" %in% results$model) "4Q average" else NULL
-scores <- evaluate_forecasts(results, benchmark = benchmark)
+scores <- evaluate_forecasts(results, benchmark = "4Q average")
 write.csv(scores, "results/scores.csv", row.names = FALSE)
-options(knitr.kable.NA = "--")
 knitr::kable(scores, digits = 3, booktabs = TRUE,
   col.names = c("Model", "h", "n", "RMSE", "Relative RMSE", "MAE", "Mean error"),
-  caption = "Provisional forecast accuracy for Models 3-7, ordered by RMSE within horizon.")
+  caption = "Forecast accuracy for all seven models, ordered by RMSE within horizon.")
 ```
 
-The dashes denote unavailable relative RMSE, not zero.
+Relative RMSE below one indicates lower RMSE than the four-quarter average.
 
 ## Results by horizon
 
-At $h=1$, fixed gap has the lowest RMSE (3.002), followed by 4Q average AR (3.039). Their MAEs are the same, 1.873. AR(p) and direct AR give identical one-step forecasts, as expected from their matching regression and lag-selection rules at this horizon. The Phillips curve has slightly higher RMSE and MAE than direct AR.
+At $h=1$, fixed gap has the lowest RMSE (3.002), followed by the four-quarter average (3.039). Their MAEs both round to 1.873, with the four-quarter average slightly lower before rounding. AR(p) and direct AR give identical one-step forecasts, as expected from their matching regression and lag-selection rules at this horizon. The Phillips curve has slightly higher RMSE and MAE than direct AR.
 
 At $h=4$, fixed gap again has the lowest RMSE and MAE (2.726 and 1.617), followed by gap AR. The 4Q average ranks third in performance at $h=4$. Iterated AR(p) does better than direct AR, while adding unemployment to direct AR does not improve either error measure.
 
 At $h=8$, fixed gap remains lowest on both measures (RMSE 2.781; MAE 1.688),
-with gap AR second. All five models overpredict on average. The mean errors
+with gap AR second. All seven models overpredict on average. The mean errors
 are -0.370 and -0.430 for the two gap models, compared with -1.440 for direct AR
 and -1.553 for the Phillips curve.
 
-Fixed gap therefore leads the five-model comparison at every horizon. Among
-the models with estimated coefficients, gap AR has the lowest one-step RMSE;
-this is why Step 5 diagnoses gap AR rather than fixed gap, whose persistence
-is imposed at 0.46. These are descriptive rankings, not significance tests.
+Fixed gap has the lowest RMSE at every horizon, with relative RMSE of 0.988,
+0.933, and 0.912. Gap AR also beats the four-quarter average at horizons 4 and 8,
+but not at horizon 1. The random walk has the highest RMSE at every horizon.
+These are descriptive rankings, not significance tests.
 The Phillips-curve result applies to this specification and sample, not to the
 usefulness of unemployment in general. Different horizons have different target
 periods, so lower RMSE at a longer horizon does not imply that forecasting
@@ -486,10 +483,12 @@ accuracy_plot(8)
 ```
 
 The plots share a horizontal scale. RMSE and MAE give the same model ordering
-at each horizon, including the one-step AR(p)/direct AR tie. RMSE exceeds MAE
+except for the nearly tied fixed-gap and four-quarter-average MAEs at $h=1$.
+The one-step AR(p)/direct AR tie holds for both measures. RMSE exceeds MAE
 for every model, reflecting its greater weight on large errors. The largest
-absolute forecast error occurs in 2008Q4 for every model and horizon. That
-quarter remains in the main comparison; the sensitivity check in Step 5 does
+absolute forecast error occurs in 2008Q4, except for the random walk at $h=8$,
+whose largest error is in 2010Q4. The 2008Q4 observation remains in the main
+comparison; the sensitivity check in Step 5 does
 not change the assigned evaluation sample.
 
 \newpage
@@ -506,7 +505,7 @@ forecasts are excluded because they estimate no parameters.
 #| label: step5-select
 # lowest h = 1 RMSE among the estimated core models
 h1_rmse <- results |>
-  filter(h == 1 & model %in% c("Random walk", "4Q average", "AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
+  filter(h == 1 & model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
   group_by(model) |>
   summarize(rmse = sqrt(mean(error^2))) |>
   arrange(rmse)
@@ -526,7 +525,7 @@ from this sample, and BIC again selects the gap lag order.
 ```{r}
 #| label: step5-refit
 # guard: stop if a different model wins the h = 1 comparison
-# stopifnot(best_model == "Gap AR")
+stopifnot(best_model == "Gap AR")
 
 # all data through 2019Q4
 train_2019 <- q |>
