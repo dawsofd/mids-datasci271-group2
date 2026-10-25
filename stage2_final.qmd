@@ -389,10 +389,6 @@ updated as the estimation window expands; the model definitions do not change.
 
 ## Provisional comparison of Models 3-7
 
-The five available models are compared below. The random-walk and
-four-quarter-average models are not yet included, so relative RMSE is
-unavailable. These results do not establish which models beat the required
-four-quarter-average benchmark.
 
 We use the saved forecasts in `results` from Step 3, without fitting the models
 again. All models have the same target quarters within each horizon: 80 at
@@ -407,7 +403,7 @@ the same horizon. RMSE is the primary ranking measure.
 
 ```{r}
 #| label: code-evaluation-odysseus
-#| file: R/04_evaluation_odysseus.R
+#| source(here::here("R", "04_evaluation_odysseus.R"))
 ```
 
 ```{r}
@@ -425,15 +421,9 @@ The dashes denote unavailable relative RMSE, not zero.
 
 ## Results by horizon
 
-At $h=1$, fixed gap has the lowest RMSE (3.002), followed by gap AR (3.057).
-Their MAEs are very close, 1.873 and 1.878. AR(p) and direct AR give identical
-one-step forecasts, as expected from their matching regression and lag-selection
-rules at this horizon. The Phillips curve has slightly higher RMSE and MAE
-than direct AR.
+At $h=1$, fixed gap has the lowest RMSE (3.002), followed by 4Q average AR (3.039). Their MAEs are the same, 1.873. AR(p) and direct AR give identical one-step forecasts, as expected from their matching regression and lag-selection rules at this horizon. The Phillips curve has slightly higher RMSE and MAE than direct AR.
 
-At $h=4$, fixed gap again has the lowest RMSE and MAE (2.726 and 1.617),
-followed by gap AR. Iterated AR(p) does better than direct AR, while adding
-unemployment to direct AR does not improve either error measure.
+At $h=4$, fixed gap again has the lowest RMSE and MAE (2.726 and 1.617), followed by gap AR. The 4Q average ranks third in performance at $h=4$. Iterated AR(p) does better than direct AR, while adding unemployment to direct AR does not improve either error measure.
 
 At $h=8$, fixed gap remains lowest on both measures (RMSE 2.781; MAE 1.688),
 with gap AR second. All five models overpredict on average. The mean errors
