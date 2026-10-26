@@ -392,7 +392,11 @@ first_fc <- results |>
   filter(origin == yearquarter("1999 Q4"),
          model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
   rowwise() |>
-  mutate(p = fit_direct(train_1999, h, unemployment = model == "Phillips curve")$p) |>
+  mutate(p = case_when(
+    model == "AR(p)"  ~ fit_ar(train_1999)$p,
+    model == "Gap AR" ~ fit_gap_ar(train_1999)$p,
+    TRUE ~ fit_direct(train_1999, h, unemployment = model == "Phillips curve")$p
+  )) |>
   ungroup() |>
   mutate(target = format(target)) |>
   select(model, h, target, p, forecast)
