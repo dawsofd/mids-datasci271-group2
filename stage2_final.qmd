@@ -390,7 +390,7 @@ results |>
 train_1999 <- q |> as_tibble() |> filter(qtr <= yearquarter("1999 Q4"))
 first_fc <- results |>
   filter(origin == yearquarter("1999 Q4"),
-         model %in% c("Direct AR", "Phillips curve")) |>
+         model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
   rowwise() |>
   mutate(p = fit_direct(train_1999, h, unemployment = model == "Phillips curve")$p) |>
   ungroup() |>
