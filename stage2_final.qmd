@@ -1,7 +1,7 @@
 ---
 title: "Forecasting U.S. Inflation"
 subtitle: "Stage 2: Core Paper-Based Forecast Comparison"
-author: "Sarat Chandra Vegunta, Dawson Dohlen, Jana, Odysseus Kaloidas"
+author: "Sarat Chandra Vegunta, Dawson Dohlen, Jana Quan, Odysseus Kaloidas"
 date: last-modified
 date-format: "MMMM D, YYYY"
 format:
