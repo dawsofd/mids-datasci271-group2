@@ -1,6 +1,5 @@
 # 01_data.R
 # Builds the shared quarterly dataset used by every Stage 2 model.
-# Owner: Dawson. Do not change these rules without group agreement.
 #
 # Rules (project guide Stage 1 Step 3, plus Stage 1 decisions):
 #   - Raw data: course repo CSVs in data/, unchanged (FRED monthly).
