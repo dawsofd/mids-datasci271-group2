@@ -1,0 +1,581 @@
+---
+title: "Forecasting U.S. Inflation"
+subtitle: "Stage 2: Core Paper-Based Forecast Comparison"
+author: "Sarat Chandra Vegunta, Dawson Dohlen, Jana Quan, Odysseus Kaloidas"
+date: last-modified
+date-format: "MMMM D, YYYY"
+format:
+  pdf:
+    pdf-engine: xelatex
+    geometry: margin=0.7in
+    fontsize: 10pt
+    number-sections: false
+    toc: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+knitr::opts_chunk$set(fig.align = "center", fig.pos = "H")
+library(urca)
+library(slider)
+```
+
+The shared data loader, `R/01_data.R`, builds the quarterly series used throughout.
+
+```{r}
+#| label: code-data
+#| file: R/01_data.R
+```
+
+```{r}
+#| label: shared-data-and-models
+#| results: hide
+q <- load_quarterly()
+panel <- q |>
+  filter(qtr <= yearquarter("2019 Q4")) |>
+  transmute(quarter = gsub(" ", "", format(qtr)),
+            observation_date = as.Date(qtr) + months(2),
+            CPIAUCSL = cpi, UNRATE = unrate, TB3MS = tbill, inflation = infl) |>
+  as.data.frame()
+stopifnot(nrow(panel) == 240, !anyNA(panel), !anyDuplicated(panel$quarter),
+          all(diff(as.integer(format(panel$observation_date, "%Y")) * 4 +
+                   as.integer(format(panel$observation_date, "%m")) / 3) == 1))
+initial <- subset(panel, quarter <= "1999Q4")
+stopifnot(nrow(initial) == 160)
+series <- c("inflation", "UNRATE", "TB3MS")
+series_names <- c("CPI inflation", "Unemployment", "3-month T-bill rate")
+```
+
+# Stage 1 recap
+
+For Stage 2 we use the instructor-provided CSVs and the shared data loader. They match our individual Stage 1 FRED downloads through 2019. The series are CPIAUCSL, UNRATE, and TB3MS, selecting March, June, September, and December rather than averaging months. Inflation is $\pi_t=400\log(P_t/P_{t-1})$, using December 1959 as the base for 1960Q1. There are 160 complete quarters in 1960Q1-1999Q4 and 240 through 2019Q4, with no missing or duplicate quarters.
+
+Inflation averages `r sprintf("%.2f", mean(initial$inflation))`%, but is much higher in the 1970s and early 1980s than at the start or end of the sample. The Stage 1 trailing summaries and PELT analysis show a changing center and variability. The number of PELT/BIC breaks depends on the noise assumption: 17 with the default unscaled specification and 6 after scaling by an estimated noise standard deviation. Both versions place breaks at 1973Q1 and 1981Q4, the start and end of the high-inflation period. The dates are descriptive, not confirmed regime boundaries, and do not enter the forecasting regressions below. The inflation-unemployment correlation is `r sprintf("%.2f", cor(initial$inflation, initial$UNRATE))`, so that scatter alone does not tell us whether unemployment improves forecasts.
+
+```{r}
+#| label: fig-initial
+#| fig-width: 7
+#| fig-height: 4.2
+#| fig-cap: "Initial-sample time plots and ACFs. Lag is measured in quarters; dashed ACF bands are approximate 95% white-noise bounds."
+par(mfrow = c(3, 2), mar = c(3.1, 3.6, 2.1, 0.8), mgp = c(2, 0.65, 0),
+    cex = 0.78)
+for (j in seq_along(series)) {
+  y <- initial[[series[j]]]
+  plot(ts(y, start = c(1960, 1), frequency = 4), ylab = "Percent",
+       xlab = "", main = series_names[j], col = "#246B8E", lwd = 1)
+  acf(y, lag.max = 24, main = "", xlab = "Lag (quarters)")
+  title(main = "ACF", line = 0.5, font.main = 1)
+}
+```
+
+\newpage
+
+# Step 1: Stationarity and structural change
+
+All three series are persistent in @fig-initial. Their lag-1 autocorrelations are `r paste(sprintf("%.2f", sapply(initial[series], function(y) acf(y, plot = FALSE)$acf[2])), collapse = ", ")`, respectively. Inflation and the bill rate show particularly large changes around the high-inflation period; unemployment moves through long cycles, including its early-1980s peak. None looks well described by one straight deterministic trend.
+
+We therefore use an intercept but no linear trend in each ADF regression, and level-stationarity KPSS tests. The ADF null is a unit root; the KPSS null is stationarity around a constant. We compare both tests at 5%. For ADF, we select 0-4 augmentation lags by BIC on a common sample, then refit the selected lag using all available rows. For KPSS, we use the short bandwidth, which is four lags here. The same choices apply to first differences.
+
+```{r}
+#| label: stationarity-tests
+test_series <- function(y) {
+  differences <- embed(diff(y), 5)
+  regression_data <- data.frame(change = differences[, 1],
+                                level = y[5:(length(y) - 1)], differences[, 2:5])
+  names(regression_data)[3:6] <- paste0("lag", 1:4)
+  bic <- sapply(0:4, function(k) {
+    formula <- reformulate(c("level", head(paste0("lag", 1:4), k)),
+                           response = "change")
+    BIC(lm(formula, data = regression_data))
+  })
+  k <- which.min(bic) - 1
+  adf <- ur.df(y, type = "drift", lags = k, selectlags = "Fixed")
+  kpss <- ur.kpss(y, type = "mu", lags = "short")
+  data.frame(ADF_lags = k, ADF = adf@teststat[1, "tau2"],
+             KPSS = kpss@teststat, KPSS_lags = kpss@lag)
+}
+tests <- do.call(rbind, lapply(seq_along(series), function(j) {
+  y <- initial[[series[j]]]
+  rbind(cbind(Series = series_names[j], Form = "Level", test_series(y)),
+        cbind(Series = series_names[j], Form = "First difference", test_series(diff(y))))
+}))
+knitr::kable(tests[c("Series", "Form", "ADF_lags", "ADF", "KPSS")],
+             col.names = c("Series", "Form", "ADF lags", "ADF", "KPSS"),
+             digits = 3, booktabs = TRUE)
+```
+
+The 5% critical values are -2.880 for ADF and 0.463 for KPSS. Reject the ADF null for a more negative statistic, and the KPSS null for a larger statistic. At levels, ADF does not reject a unit root for any series, while KPSS rejects constant-mean stationarity for all three. After one difference, ADF rejects and KPSS does not reject for every series.
+
+| Series | ADF evidence | KPSS evidence | Structural-change evidence | Classification |
+|:---|:---|:---|:---|:---|
+| CPI inflation | Reject only after differencing | Reject only in levels | Changing mean and variability | $I(1)$, provisionally |
+| Unemployment | Reject only after differencing | Reject only in levels | Long cycles; early-1980s peak | $I(1)$, provisionally |
+| T-bill rate | Reject only after differencing | Reject only in levels | Early-1980s peak, then decline | $I(1)$, provisionally |
+
+These are working classifications, not proof of a permanent unit root. A changing mean can make stationary behavior within periods look nonstationary over the full sample, and the tests do not separate those explanations. The project still calls for its specified forecasting models; we do not replace them with differenced models solely because of these tests. The changing inflation mean gives a reason to compare the gap models with fixed-mean alternatives.
+
+\newpage
+
+# Step 2: Expanding-window forecast setup
+
+The first forecast origin is 1999Q4, using 1960Q1-1999Q4 for estimation. At each later origin, we add one quarter, re-estimate the model, and retain forecasts at horizons 1, 4, and 8. The final historical target is 2019Q4; observations from 2020 onward are reserved for the later project stage.
+
+The shared evaluation harness, `R/02_harness.R`, runs every model through this design.
+
+```{r}
+#| label: code-harness
+#| file: R/02_harness.R
+```
+
+```{r}
+#| label: forecast-schedule
+first_origin <- match("1999Q4", panel$quarter)
+last_target <- match("2019Q4", panel$quarter)
+schedule <- do.call(rbind, lapply(c(1, 4, 8), function(h) {
+  origins <- first_origin:(last_target - h)
+  data.frame(origin = panel$quarter[origins],
+             target_quarter = panel$quarter[origins + h],
+             horizon = h, training_quarters = origins)
+}))
+stopifnot(identical(as.integer(table(schedule$horizon)), c(80L, 77L, 73L)),
+          !anyDuplicated(schedule[c("origin", "horizon")]))
+schedule_summary <- do.call(rbind, lapply(split(schedule, schedule$horizon), function(x) {
+  data.frame(Horizon = x$horizon[1], `First origin` = x$origin[1],
+             `Last origin` = tail(x$origin, 1), `First target` = x$target_quarter[1],
+             `Last target` = tail(x$target_quarter, 1), Errors = nrow(x),
+             check.names = FALSE)
+}))
+knitr::kable(schedule_summary, row.names = FALSE, booktabs = TRUE)
+```
+
+The schedule contains 230 origin-horizon pairs per model. The counts differ because a forecast made eight quarters ahead reaches its first target later than a one-quarter forecast. Within each horizon, all nine models must use the same target quarters.
+
+## Estimation and data boundaries
+
+At origin $T$, only observations through $T$ enter fitting, lag selection, or smoothing. For the direct AR and direct Phillips-curve models, the response is $\pi_{t+h}$, so a training row is usable only when $t+h\leq T$. Each horizon gets its own regression and BIC lag selection over 1-4 inflation lags. Candidate lag orders should be compared on the same available response rows.
+
+Variables, transformations, candidate lag ranges, estimation methods, horizons, and forecast construction stay fixed throughout evaluation; only fitted parameters and BIC-selected lag orders are updated at each origin. Later forecast errors must not be used to revise those choices.
+
+For example, at origin 1999Q4 with $h=4$, the latest training row is dated 1998Q4 and its response is inflation in 1999Q4. The new forecast uses regressors observed in 1999Q4 to predict inflation in 2000Q4. The Phillips-curve model adds unemployment observed at the regressor date, not future unemployment.
+
+The source files contain revised historical observations rather than real-time vintages, so the experiment is pseudo-out-of-sample, not a reconstruction of the information actually released at each historical date.
+
+## Shared output for the model comparison
+
+Each model function returns a tibble with `h` and `forecast`, as required by the shared harness. The harness adds `model`, `origin`, `target`, `actual`, and `error = actual - forecast`. Positive errors mean underprediction. Every model passes its forecast-count check. The saved forecasts contain 230 rows per model, with no missing or duplicate origin-horizon pairs.
+
+\newpage
+
+# Step 3: Core forecasting models
+
+Each model's functions live in its owner's file in `R/`, shown below in full.
+
+## Model 1: Random walk
+
+At forecast origin $T$, we generate point forecasts using a random walk model without drift:
+
+$$ \pi_{t} = \pi_{t-1} + \varepsilon_t, \qquad E(\varepsilon_t) = 0, \qquad \operatorname{Var}(\varepsilon_t) = \sigma_\varepsilon^2 $$
+
+The $h$-step-ahead point forecast is set to the most recent observed inflation rate:
+
+$$ \widehat{\pi}_{T+h \mid T}^{\mathrm{RW}} = \pi_T $$
+
+The function verifies that the training sample contains valid finite observations and repeats this value to produce point forecasts for horizons $h \in \{1, 4, 8\}$. No estimation or iteration is required.
+
+## Model 2: Four-quarter-average benchmark
+
+At forecast origin $T$, we compute point forecasts as the sample average of the four most recently observed inflation rates:
+
+$$ \widehat{\pi}_{T+h \mid T}^{\mathrm{4Q}} = \frac{1}{4} \sum_{j=0}^{3} \pi_{T-j} $$
+
+The function verifies that the training sample contains at least four finite observations, extracts the four most recent values, and calculates their mean $\bar{\pi}_T$. This single value is then assigned as the point forecast across horizons $h \in \{1, 4, 8\}$.
+
+```{r}
+#| label: code-models-chandra
+#| file: R/03_models_chandra.R
+```
+
+## Model 3: AR(p)
+
+At each forecast origin $T$, we estimate an autoregressive model with an intercept for next-quarter inflation:
+
+$$\pi_t = c + \sum_{j=1}^p \phi_j \pi_{t-j} + \varepsilon_t$$
+
+Candidate lag orders $p \in \{1, 2, 3, 4\}$ are evaluated using BIC on a common sample starting at the fifth training quarter ($t=5$), ensuring that each candidate order model is compared over an identical set of response observations. We then refit the selected order on all available historical rows for that $p$ .
+
+Point forecasts through horizon $h=8$ are generated iteratively using the same estimated coefficients:
+
+$$\widehat{\pi}_{T+k \mid T} = c + \sum_{j=1}^p \phi_j \widehat{\pi}_{T+k-j \mid T}, \quad k = 1, \dots, 8,$$
+
+where unobserved future values are replaced by earlier iterative forecasts. If stationary, the model implies a fixed long-run mean $\mu = c / (1 - \sum \phi_j)$. The code in `R/03_models_jana.R` provides `model_ar(train)` for and `fit_ar(train)`.
+
+## Local mean by simple exponential smoothing
+
+Following Faust and Wright (2013, Section 4.4.5), we construct a time-varying local mean $\tau_t$ using simple exponential smoothing with a fixed parameter $\alpha = 0.05$ (95% weight on the previous local mean and 5% weight on current inflation):
+
+$$\tau_{1960Q1} = \pi_{1960Q1}, \qquad \tau_t = 0.95 \tau_{t-1} + 0.05 \pi_t \quad (t > 1).$$
+
+The calculation is strictly one-sided: at origin $T$, the local mean $\tau_T$ depends only on inflation observed through quarter $T$ and uses no future observations. The inflation gap $g_t$ measures the deviation of observed inflation from this slow-moving trend:
+
+$$g_t = \pi_t - \tau_t.$$
+
+This transformation is implemented in `calc_local_mean(infl, alpha = 0.05)` and serves as the foundation for Models 5 and 6.
+
+## Model 5: Gap AR
+
+The gap AR model recenters inflation around the slow-moving local mean by estimating an autoregression on the stationary inflation gap $g_t$:
+
+$$g_t = a + \sum_{j=1}^p \rho_j g_{t-j} + v_t.$$
+
+At each origin $T$, lag length $p \in \{1, 2, 3, 4\}$ is selected by BIC on the common sample ($t=5, \dots, T$) and refit on all available historical gap observations, similar to the procedure described for Model 3. Forecasts of the gap $\widehat{g}_{T+h \mid T}$ are generated iteratively through eight quarters.
+
+The future local mean is held constant at $\tau_T$, as future inflation rates needed to update it are not yet available. The final inflation forecast adds the origin local mean back to the gap forecast:
+
+$$\widehat{\pi}^{GAP}_{T+h \mid T} = \tau_T + \widehat{g}_{T+h \mid T}.$$
+
+Comparison with the standard AR($p$) model examines whether filtering out low-frequency shifts in trend inflation improves forecast accuracy. The model is implemented in `model_gap_ar(train)` and `fit_gap_ar(train)`.
+
+## Model 6: Fixed-persistence gap forecast
+
+Model 6 adopts the restricted specification from Faust and Wright (2013, Section 4.4.7), which eliminates parameter estimation uncertainty by imposing a fixed persistence value of 0.46:
+
+$$\widehat{\pi}^{FIX}_{T+h \mid T} = \tau_T + 0.46^h g_T.$$
+
+Here, $g_T = \pi_T - \tau_T$ is the inflation gap observed at origin $T$. As the forecast horizon $h$ extends, the gap component decays geometrically ($0.46^1 = 0.46$, $0.46^4 \approx 0.045$, $0.46^8 \approx 0.002$), smoothly pulling the forecast back toward the current local mean $\tau_T$.
+
+In this model no parameters are estimated, eliminating sample estimation error entirely. Comparing Model 6 with Model 5 tests whether estimating additional persistence parameters provides sufficient forecasting benefit to compensate for parameter estimation uncertainty. This model is implemented in `model_gap_fixed(train)`.
+
+```{r}
+#| label: code-models-jana
+#| file: R/03_models_jana.R
+```
+
+## Model 4: Direct AR
+
+For each horizon $h=1,4,8$, we fit a separate regression with an intercept:
+
+$$\pi_{t+h}=c_h+\sum_{j=0}^{p_h-1}\phi_{h,j}\pi_{t-j}+\varepsilon_{t+h}.$$
+
+At origin $T$, the final response in estimation is $\pi_T$, so the most recent regressor row is dated $T-h$. BIC selects $p_h$ from 1 through 4 on a common sample beginning at the fourth training quarter. We then refit the selected order on all rows available for that order. The forecast uses inflation at $T$ and its selected lags. No iterative forecasts or future inflation regressors are used.
+
+## Model 7: Direct Phillips curve
+
+The Phillips-curve model adds unemployment observed at each regressor date:
+
+$$\pi_{t+h}=c_h+\sum_{j=0}^{p_h-1}\phi_{h,j}\pi_{t-j}
++\lambda_h u_t+\varepsilon_{t+h}.$$
+
+It has its own BIC lag selection at each horizon and origin, using the same candidate orders and sample rule as the direct AR. Forecasting uses $u_T$, not unemployment at $T+h$. Both models stay in levels, as the guide specifies.
+
+The code in `R/03_models_odysseus.R` supplies `direct_ar_model(train)` and `phillips_model(train)`. The small shared fitting function keeps their response alignment and lag-selection rules identical.
+
+```{r}
+#| label: code-models-odysseus
+#| file: R/03_models_odysseus.R
+```
+
+## Model 8: Constant-coefficient VAR(p)
+
+Following the Stage 3 specification, we model the three-variable system $y_t = (\pi_t, u_t, r_t)'$ in levels—where $\pi_t$ is CPI inflation, $u_t$ is `UNRATE`, and $r_t$ is `TB3MS`—using a constant-coefficient vector autoregression:
+
+$$y_t = c + A_1 y_{t-1} + \cdots + A_p y_{t-p} + \varepsilon_t.$$
+
+At each forecast origin $T$, the lag order $p \in \{1, 2, 3, 4\}$ is selected by multivariate BIC on a common sample ($t = 5, \dots, T$) and then refit using all available rows for that order. Forecasts are generated iteratively through eight quarters, retaining the inflation forecasts at $h \in \{1, 4, 8\}$. While the coefficients are constant within each estimated VAR, the model is re-estimated as the expanding window advances.
+
+**Limitations of the level specification:** Our Stage 2 unit-root and stationarity tests classified all three series as provisionally $I(1)$ over 1960Q1–1999Q4, driven by persistent level shifts and structural breaks (such as the 1973–1981 high-inflation regime and early-1980s disinflation). Estimating a VAR in levels when series have unit roots or shifting means can introduce finite-sample downward bias in persistence estimates, pull multi-step forecasts toward the historical sample mean rather than the current local regime, and distort standard inference. Consistent with the project design, however, we keep this level VAR specification fixed throughout the expanding-window evaluation so it can be directly compared against the single-equation level and gap models.
+
+```{r}
+#| label: code-models-var
+#| file: R/05_models_chandra.R
+```
+
+## Running all models
+
+All nine models run through the shared harness in one place. The list below gives the labels used in every results table. All eight functions must be available before running the comparison.
+
+```{r}
+#| label: run-all-models
+#| results: hide
+model_fns <- c(
+  "Random walk"    = "model_rw",
+  "4Q average"     = "model_4q",
+  "AR(p)"          = "model_ar",
+  "Direct AR"      = "direct_ar_model",
+  "Gap AR"         = "model_gap_ar",
+  "Fixed gap"      = "model_gap_fixed",
+  "Phillips curve" = "phillips_model",
+  "VAR(p)"         = "model_var"
+)
+stopifnot(all(vapply(model_fns, exists, logical(1))))
+stopifnot(check_no_lookahead(q, model_var))
+models <- lapply(model_fns, get)
+
+results <- run_harness(q, models)
+check_counts(results)
+
+# frozen forecasts: saved once, before any evaluation
+dir.create("results", showWarnings = FALSE)
+results |>
+  mutate(across(c(origin, target), format)) |>
+  write.csv("results/forecasts.csv", row.names = FALSE)
+```
+
+```{r}
+#| label: first-origin
+train_1999 <- q |> as_tibble() |> filter(qtr <= yearquarter("1999 Q4"))
+first_fc <- results |>
+  filter(origin == yearquarter("1999 Q4"),
+         model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve", "VAR(p)")) |>
+  rowwise() |>
+  mutate(p = case_when(
+    model == "AR(p)"  ~ fit_ar(train_1999)$p,
+    model == "Gap AR" ~ fit_gap_ar(train_1999)$p,
+    model == "VAR(p)" ~ fit_var(train_1999)$p,
+    TRUE ~ fit_direct(train_1999, h, unemployment = model == "Phillips curve")$p
+  )) |>
+  ungroup() |>
+  mutate(target = format(target)) |>
+  select(model, h, target, p, forecast)
+knitr::kable(first_fc, digits = 3, booktabs = TRUE,
+             col.names = c("Model", "Horizon", "Target", "Lags", "Forecast"),
+             caption = "Forecasts from the first origin, 1999Q4 (annualized percent).")
+```
+
+The target is inflation in the indicated single quarter, not average or cumulative inflation over the next $h$ quarters. Coefficients and selected lag orders are updated as the estimation window expands; the model definitions do not change.
+
+# Step 4: Forecast evaluation
+
+## Comparison of all eight models
+
+We use the saved forecasts in `results` from Step 3, without fitting the models again. All models have the same target quarters within each horizon: 80 at $h=1$, 77 at $h=4$, and 73 at $h=8$, following the schedule in Step 2. With $e_t=\pi_t-\hat\pi_t$, we calculate $\mathrm{RMSE}=\sqrt{\operatorname{mean}(e_t^2)}$, $\mathrm{MAE}=\operatorname{mean}(|e_t|)$, and $\mathrm{ME}=\operatorname{mean}(e_t)$. These are in percentage points of annualized inflation; negative mean error indicates overprediction. Relative RMSE divides a model's RMSE by the four-quarter-average RMSE at the same horizon. RMSE is the primary ranking measure.
+
+```{r}
+#| label: code-evaluation-odysseus
+#| file: R/04_evaluation_odysseus.R
+```
+
+```{r}
+#| label: step4-scores
+scores <- evaluate_forecasts(results, benchmark = "4Q average")
+write.csv(scores, "results/scores.csv", row.names = FALSE)
+knitr::kable(scores, digits = 3, booktabs = TRUE,
+  col.names = c("Model", "h", "n", "RMSE", "Relative RMSE", "MAE", "Mean error"),
+  caption = "Forecast accuracy for all eight models, ordered by RMSE within horizon.")
+```
+
+Relative RMSE below one indicates lower RMSE than the four-quarter average.
+
+## Results by horizon
+
+At $h=1$, fixed gap has the lowest RMSE (3.002), followed by the four-quarter average (3.039). Their MAEs both round to 1.873, with the four-quarter average slightly lower before rounding. AR(p) and direct AR give identical one-step forecasts, as expected from their matching regression and lag-selection rules at this horizon. The Phillips curve has slightly higher RMSE and MAE than direct AR, while the constant-coefficient VAR(p) ranks seventh (RMSE 3.303; MAE 2.077), ahead only of the random walk.
+
+At $h=4$, fixed gap again has the lowest RMSE and MAE (2.726 and 1.617), followed by gap AR. The 4Q average ranks third in performance at $h=4$. Iterated AR(p) does better than direct AR, while VAR(p) (RMSE 3.083; MAE 1.997) edges out both direct AR (3.094) and the Phillips curve (3.102).
+
+At $h=8$, fixed gap remains lowest on both measures (RMSE 2.781; MAE 1.688), with gap AR second. VAR(p) places seventh by RMSE (3.320) and sixth by MAE (2.242), ahead of the Phillips curve on MAE and ahead of the random walk on both metrics. All eight models overpredict on average. The mean errors are -0.370 and -0.430 for the two gap models, compared with -1.239 for VAR(p), -1.440 for direct AR, and -1.553 for the Phillips curve.
+
+Fixed gap has the lowest RMSE at every horizon, with relative RMSE of 0.988, 0.933, and 0.912. Gap AR also beats the four-quarter average at horizons 4 and 8, but not at horizon 1. The random walk has the highest RMSE at every horizon. These are descriptive rankings, not significance tests. The Phillips-curve result applies to this specification and sample, not to the usefulness of unemployment in general. Different horizons have different target periods, so lower RMSE at a longer horizon does not imply that forecasting further ahead is easier.
+
+```{r}
+#| label: step4-plot-setup
+plot_data <- scores |>
+  select(model, h, RMSE, MAE) |>
+  pivot_longer(c(RMSE, MAE), names_to = "Metric", values_to = "Error") |>
+  mutate(model = factor(model, levels = rev(names(models))))
+accuracy_plot <- function(horizon) {
+  ggplot(filter(plot_data, h == horizon),
+         aes(Error, model, colour = Metric, shape = Metric)) +
+    geom_point(size = 2.5) +
+    scale_colour_manual(values = c(MAE = "#4477AA", RMSE = "#AA3377")) +
+    scale_x_continuous(limits = c(0, ceiling(max(plot_data$Error)))) +
+    labs(x = "Error (percentage points of annualized inflation)", y = NULL,
+         title = paste0("h = ", horizon,
+                        if (horizon == 1) " quarter ahead" else " quarters ahead")) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", plot.title = element_text(face = "plain"))
+}
+```
+
+```{r}
+#| label: fig-step4-h1
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "One-quarter-ahead accuracy on the common 80-quarter target sample."
+accuracy_plot(1)
+```
+
+```{r}
+#| label: fig-step4-h4
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "Four-quarter-ahead accuracy on the common 77-quarter target sample."
+accuracy_plot(4)
+```
+
+\newpage
+
+```{r}
+#| label: fig-step4-h8
+#| fig-width: 6.5
+#| fig-height: 3
+#| fig-cap: "Eight-quarter-ahead accuracy on the common 73-quarter target sample."
+accuracy_plot(8)
+```
+
+The plots share a horizontal scale. RMSE and MAE give the same model ordering except for the nearly tied fixed-gap and four-quarter-average MAEs at $h=1$. The one-step AR(p)/direct AR tie holds for both measures. RMSE exceeds MAE for every model, reflecting its greater weight on large errors. The largest absolute forecast error occurs in 2008Q4, except for the random walk at $h=8$, whose largest error is in 2010Q4. The 2008Q4 observation remains in the main comparison; the sensitivity check in Step 5 does not change the assigned evaluation sample.
+
+\newpage
+
+# Step 5: Diagnostics for the leading one-step model
+
+Step 5 checks the residuals of the leading one-step model. We look for remaining autocorrelation, unstable variability, and large errors that may drive RMSE. As the guide specifies, we select the estimated core model with the lowest $h=1$ RMSE. The random-walk, four-quarter-average, and fixed-gap forecasts are excluded because they estimate no parameters.
+
+```{r}
+#| label: step5-select
+# lowest h = 1 RMSE among the estimated core models
+h1_rmse <- results |>
+  filter(h == 1 & model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve", "VAR(p)")) |>
+  group_by(model) |>
+  summarize(rmse = sqrt(mean(error^2))) |>
+  arrange(rmse)
+h1_rmse
+
+best_model <- h1_rmse |> slice(1) |> pull(model)
+best_model
+```
+
+The gap AR has the lowest one-step RMSE, `r sprintf("%.2f", h1_rmse$rmse[1])`. AR(p) and the direct AR follow at `r sprintf("%.2f", h1_rmse$rmse[2])`; they produce identical one-step forecasts.
+
+We refit the gap AR on all data through 2019Q4. The local mean is rebuilt from this sample, and BIC again selects the gap lag order.
+
+```{r}
+#| label: step5-refit
+# guard: stop if a different model wins the h = 1 comparison
+stopifnot(best_model == "Gap AR")
+
+# all data through 2019Q4
+train_2019 <- q |>
+  as_tibble() |>
+  filter(qtr <= yearquarter("2019 Q4")) |>
+  select(qtr, infl, unrate, tbill)
+
+gap_fit <- fit_gap_ar(train_2019)
+
+gap_fit$p
+summary(gap_fit$fit)
+```
+
+BIC selects `r gap_fit$p` gap lags. The lag coefficients sum to `r sprintf("%.2f", sum(coef(gap_fit$fit)[-1]))`, so the gap is persistent but reverts toward the local mean. The intercept is near zero, as expected for a deviation from the local mean. The residual standard error is `r sprintf("%.2f", sigma(gap_fit$fit))` percentage points across `r nrow(gap_fit$resid)` residuals.
+
+@fig-step5-resid plots the refit residuals. Well-specified residuals should vary around zero without trends or long runs.
+
+```{r}
+#| label: fig-step5-resid
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Gap AR residuals, refit through 2019Q4 (percentage points)."
+resid_ts <- gap_fit$resid |> as_tsibble(index = qtr)
+
+resid_ts |>
+  autoplot(resid) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(x = NULL, y = "Residual (pp)")
+```
+
+```{r}
+#| label: step5-largest
+# five largest residuals in absolute value
+largest <- resid_ts |>
+  as_tibble() |>
+  slice_max(abs(resid), n = 5) |>
+  mutate(qtr = format(qtr), resid = round(resid, 2))
+knitr::kable(largest, col.names = c("Quarter", "Residual"), booktabs = TRUE)
+```
+
+The residuals center on zero with no visible trend. The largest errors are 2008Q4, 2005Q3, 2005Q4, 1986Q1, and 1981Q4. Most coincide with energy-price shocks: the late-2008 oil collapse, the 2005 gasoline spike and reversal, and the 1986 oil-price drop. 1981Q4 falls during the Volcker disinflation. Their spread also changes over time, with wider swings in the 1970s to mid-1980s and after 2005 than in between.
+
+@fig-step5-acf shows the residual autocorrelations. A Ljung-Box test checks whether the first eight are jointly zero, with degrees of freedom reduced by the `r gap_fit$p` estimated lag coefficients.
+
+```{r}
+#| label: fig-step5-acf
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Gap AR residual ACF through 20 quarters. Dashed lines are approximate 95% bounds."
+resid_ts |>
+  ACF(resid, lag_max = 20) |>
+  autoplot() +
+  labs(x = "Lag (quarters)", y = "ACF")
+
+lb <- resid_ts |> features(resid, ljung_box, lag = 8, dof = gap_fit$p)
+lb
+```
+
+All 20 autocorrelations fall inside the approximate bounds, and lags 1 to 3 are close to zero. The Ljung-Box statistic is `r sprintf("%.2f", lb$lb_stat)` with `r 8 - gap_fit$p` degrees of freedom (p = `r sprintf("%.3f", lb$lb_pvalue)`), so we do not reject the null of no autocorrelation through lag 8. For comparison, inflation itself has a lag-1 autocorrelation of about 0.75 over 1960Q1-1999Q4. The gap AR removes that persistence from its errors.
+
+Next we check whether the size of the errors is stable. @fig-step5-sd shows a trailing 20-quarter standard deviation of the residuals, and the table below compares the residual standard deviation across periods.
+
+```{r}
+#| label: fig-step5-sd
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Trailing 20-quarter standard deviation of the gap AR residuals (percentage points)."
+resid_ts <- resid_ts |>
+  mutate(roll_sd = slide_dbl(resid, sd, .before = 19, .complete = TRUE))
+
+resid_ts |>
+  autoplot(roll_sd) +
+  labs(x = NULL, y = "SD (pp)")
+```
+
+```{r}
+#| label: step5-sd-period
+sd_by_period <- resid_ts |>
+  as_tibble() |>
+  mutate(period = case_when(
+    qtr <= yearquarter("1972 Q4") ~ "1960-1972",
+    qtr <= yearquarter("1986 Q4") ~ "1973-1986",
+    qtr <= yearquarter("2004 Q4") ~ "1987-2004",
+    TRUE ~ "2005-2019")) |>
+  group_by(period) |>
+  summarize(quarters = n(), sd = sd(resid), max_abs = max(abs(resid)))
+knitr::kable(sd_by_period, digits = 2, booktabs = TRUE,
+             col.names = c("Period", "Quarters", "Residual SD", "Largest |residual|"))
+```
+
+The residual standard deviation is not constant. It is about `r sprintf("%.1f", sd_by_period$sd[1])` in 1960-1972 and `r sprintf("%.1f", sd_by_period$sd[3])` in 1987-2004, but `r sprintf("%.1f", sd_by_period$sd[2])` in 1973-1986 and `r sprintf("%.1f", sd_by_period$sd[4])` in 2005-2019. The flat peak from 2008 to 2013 in @fig-step5-sd comes from 2008Q4 alone: it raises the trailing standard deviation until it leaves the 20-quarter window.
+
+```{r}
+#| label: step5-influence
+gap_h1 <- results |> filter(model == "Gap AR", h == 1)
+influence <- tibble(
+  Measure = c("RMSE, all 80 targets", "RMSE, excluding 2008Q4", "MAE, all 80 targets"),
+  Value = c(sqrt(mean(gap_h1$error^2)),
+            sqrt(mean(gap_h1$error[gap_h1$target != yearquarter("2008 Q4")]^2)),
+            mean(abs(gap_h1$error))))
+knitr::kable(influence, digits = 2, booktabs = TRUE)
+```
+
+The out-of-sample forecast errors show the same sensitivity. Dropping 2008Q4, one of 80 targets, lowers the gap AR's one-step RMSE from `r sprintf("%.2f", influence$Value[1])` to `r sprintf("%.2f", influence$Value[2])`. Its MAE is `r sprintf("%.2f", influence$Value[3])`, well below RMSE.
+
+Overall, the gap AR leaves no detectable autocorrelation in its errors, but their variance changes across periods and a few energy-driven shocks dominate its RMSE. Small RMSE differences between models in Step 4 should therefore be read with care.
+
+# Step 6: Summary
+
+Based on the Step 4 results:
+
+- Lowest-RMSE model by horizon: The Fixed gap model achieves the lowest RMSE across all three evaluation horizons ($h=1$: 3.002, $h=4$: 2.726, $h=8$: 2.781).
+
+- Models outperforming the benchmark: At $h=1$, only the Fixed gap model achieves a lower RMSE than the four-quarter-average benchmark. At $h=4$ and $h=8$, both the Fixed gap and Gap AR models achieve lower RMSEs than the four-quarter-average benchmark.
+
+- Main patterns in MAE and Mean Error: MAE closely tracks the RMSE model rankings at each horizon, with the lowest MAE occurring at $h=4$. Mean error is negative across almost all models and horizons—worsening significantly at longer horizons—indicating persistent systemic overprediction of inflation during the evaluation period.
+
+## Sources
+
+- W271, *Forecasting U.S. Inflation: Project Guide*, Stage 2, Steps 1-6; our Stage 1 reports; and the team's shared data loader and forecast harness.
+- Hyndman and Athanasopoulos, *Forecasting: Principles and Practice*, [stationarity](https://otexts.com/fpp3/stationarity.html) and [time-series cross-validation](https://otexts.com/fpp3/toolbox.html#time-series-cross-validation).
+- W271 Week 4 Session 2 (forecast accuracy) and Week 8 Session 1 (simple exponential smoothing); Hyndman and Athanasopoulos, [evaluating point forecast accuracy](https://otexts.com/fpp3/toolbox.html#sec-accuracy).
+- R `urca` documentation for [ADF](https://search.r-project.org/CRAN/refmans/urca/html/ur.df.html) and [KPSS](https://search.r-project.org/CRAN/refmans/urca/html/ur.kpss.html).
+- R documentation for [BIC](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/AIC.html).
