@@ -1,0 +1,601 @@
+---
+title: "Forecasting U.S. CPI Inflation"
+subtitle: "A Recursive Out-of-Sample Study"
+author:
+  - "Sarat Chandra Vegunta"
+  - "Dawson Dohlen"
+  - "Jana Quan"
+  - "Odysseus Kaloidas"
+date: last-modified
+date-format: "MMMM D, YYYY"
+format:
+  pdf:
+    pdf-engine: xelatex
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    geometry: margin=1in
+    fontsize: 10pt
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+<!--
+HOW THIS FILE WORKS (delete this comment before submission)
+- Section order follows 02_final_paper_template.qmd. Each section has an
+  OWNER comment. Edit only your own sections, on a branch from main, then PR.
+- Code is hidden in the body (template: echo: false). Every line of code is
+  shown in Appendix A: the R/ files through `#| file:` chunks and every chunk
+  in this file through a ref.label chunk.
+- Model files are loaded automatically: any R/03_models_*.R or
+  R/05_models_*.R file. New models just need their function name added to
+  `model_fns` in the run-models chunk.
+- Delete every OWNER comment and template prompt before submission.
+-->
+
+```{r}
+#| label: setup
+#| include: false
+knitr::opts_chunk$set(fig.align = "center", fig.pos = "H")
+library(urca)
+library(slider)
+
+# shared data loader, evaluation harness, and evaluation code
+source("R/01_data.R")
+source("R/02_harness.R")
+source("R/04_evaluation_odysseus.R")
+
+# every team member's model file
+for (f in sort(list.files("R", pattern = "^0[35]_models_.*\\.R$", full.names = TRUE))) {
+  source(f)
+}
+```
+
+```{r}
+#| label: data
+#| include: false
+q <- load_quarterly()
+panel <- q |>
+  filter(qtr <= yearquarter("2019 Q4")) |>
+  transmute(quarter = gsub(" ", "", format(qtr)),
+            observation_date = as.Date(qtr) + months(2),
+            CPIAUCSL = cpi, UNRATE = unrate, TB3MS = tbill, inflation = infl) |>
+  as.data.frame()
+stopifnot(nrow(panel) == 240, !anyNA(panel), !anyDuplicated(panel$quarter))
+initial <- subset(panel, quarter <= "1999Q4")
+stopifnot(nrow(initial) == 160)
+series <- c("inflation", "UNRATE", "TB3MS")
+series_names <- c("CPI inflation", "Unemployment", "3-month T-bill rate")
+```
+
+```{r}
+#| label: run-models
+#| include: false
+# labels used in every results table; a model is skipped until its function exists
+model_fns <- c(
+  "Random walk"    = "model_rw",
+  "4Q average"     = "model_4q",
+  "AR(p)"          = "model_ar",
+  "Direct AR"      = "direct_ar_model",
+  "Gap AR"         = "model_gap_ar",
+  "Fixed gap"      = "model_gap_fixed",
+  "Phillips curve" = "phillips_model",
+  "VAR"            = "model_var",
+  # Jana: confirm the function name for the local-level model
+  "Local level"    = "model_local_level"
+)
+available <- model_fns[vapply(model_fns, exists, logical(1))]
+models <- lapply(available, get)
+
+results <- run_harness(q, models)
+check_counts(results)
+
+# Odysseus: add the equal-weight and inverse-RMSE combinations to `results`
+# here, labeled "Equal weight" and "Inverse RMSE", once all seven component
+# models are available.
+
+# frozen forecasts: saved once, before any evaluation
+dir.create("results", showWarnings = FALSE)
+results |>
+  mutate(across(c(origin, target), format)) |>
+  write.csv("results/forecasts.csv", row.names = FALSE)
+
+scores <- evaluate_forecasts(results, benchmark = "4Q average")
+```
+
+# Abstract
+
+<!-- OWNER: TBD (proposed: Sarat, written last). About 150-200 words:
+forecasting question, CPI target, historical out-of-sample design, model
+families, selected model, post-2020 conclusion, and the most important finding
+about the paper's claims. No equations, citations, or unexplained abbreviations. -->
+
+[Abstract to be written after the paper is complete.]
+
+# Background and research question
+
+<!-- OWNER: TBD. Introduce Faust and Wright (2013), why inflation forecasting
+matters, the four paper-based ideas and the monitoring question, the updated
+research question, and a preview of the principal findings. Keep it short; no
+long literature review. -->
+
+[Background to be written.]
+
+# Data and preliminary evidence
+
+<!-- OWNER: TBD. Draft below is condensed from Stages 1 and 2; revise as
+needed. Template limit: no more than three main-text figures. -->
+
+## Variables and construction
+
+We use three monthly FRED series from the instructor-provided course files:
+headline CPI (`CPIAUCSL`, seasonally adjusted, 1982-84 = 100), the civilian
+unemployment rate (`UNRATE`, percent), and the three-month Treasury bill rate
+(`TB3MS`, percent, discount basis). Each quarter takes its quarter-end month
+(March, June, September, or December), so each quarterly value is the level at
+the end of that quarter rather than an average across months.
+
+Inflation is annualized quarter-over-quarter CPI growth,
+
+$$
+\pi_t=400\log\left(\frac{P_t}{P_{t-1}}\right),
+$$
+
+where $P_t$ is end-of-quarter CPI. The log ratio is the quarterly growth rate;
+multiplying by 100 converts it to percent and by 4 annualizes it. If CPI rises
+from 100 to 101, $\pi_t=400\log(1.01)\approx 3.98$ percent. December 1959 CPI
+is the base for 1960Q1. The CPI level trends upward throughout, while inflation
+is its growth rate and has no trend.
+
+## Exploratory evidence
+
+```{r}
+#| label: fig-initial
+#| fig-width: 7
+#| fig-height: 4.2
+#| fig-cap: "Initial-sample time plots and ACFs, 1960Q1-1999Q4. Dashed ACF bands are approximate 95% white-noise bounds."
+par(mfrow = c(3, 2), mar = c(3.1, 3.6, 2.1, 0.8), mgp = c(2, 0.65, 0),
+    cex = 0.78)
+for (j in seq_along(series)) {
+  y <- initial[[series[j]]]
+  plot(ts(y, start = c(1960, 1), frequency = 4), ylab = "Percent",
+       xlab = "", main = series_names[j], col = "#246B8E", lwd = 1)
+  acf(y, lag.max = 24, main = "", xlab = "Lag (quarters)")
+  title(main = "ACF", line = 0.5, font.main = 1)
+}
+```
+
+All three series are highly persistent in @fig-initial. The mean of inflation
+also shifts over 1960-1999. The number of PELT/BIC breaks depends on the noise
+assumption, but every specification places breaks at 1973Q1 and 1981Q4, the
+start and end of the high-inflation period.
+
+| Series | Plot and dependence evidence | ADF/KPSS and break evidence | Working classification | Modeling implication |
+|:--|:--|:--|:--|:--|
+| CPI inflation | Very persistent; long swings in level | ADF rejects only after differencing; KPSS rejects in levels; mean breaks in 1973Q1 and 1981Q4 | $I(1)$, provisionally | Motivates changing-mean models |
+| Unemployment | Long business-cycle swings | Same test pattern | $I(1)$, provisionally | Interpret Phillips-curve and VAR level models with care |
+| Treasury bill rate | Tracks inflation; early-1980s peak | Same test pattern | $I(1)$, provisionally | VAR level specification is a limitation |
+
+These are working classifications, not proof of a permanent unit root. A
+shifting mean can make a series that is stationary within periods fail
+stationarity tests over the full sample. A fixed historical inflation level is
+therefore not credible, which matters for AR($p$) models with a single long-run
+mean. Full test output is in Appendix C.
+
+# Forecasting design
+
+<!-- OWNER: Dawson. Draft condensed from Stage 2, Step 2. -->
+
+## Periods and information flow
+
+| Period | Role |
+|---|---|
+| 1960Q1-1999Q4 | Initial analysis, design, and estimation |
+| 2000Q1-2019Q4 | Historical out-of-sample comparison and selection |
+| 2020Q1-2026Q2 | Final evaluation and monitoring |
+
+During the historical comparison, every model is re-estimated on an expanding
+window. At a forecast origin $T$, a model sees only quarters 1960Q1 through
+$T$; lag selection, local-mean construction, and estimation all use that
+sample. The first origin is 1999Q4. The origin then moves forward one quarter
+at a time. Variables, transformations, candidate lag ranges, estimation
+methods, and horizons stay fixed; only fitted parameters and BIC-selected lag
+orders update. After selection, the chosen model is estimated once through
+2019Q4 and kept fixed for the post-2020 evaluation.
+
+## Targets and horizons
+
+The target is inflation in the single quarter $T+h$. We forecast only
+$h=1,4,8$. The historical exercise uses the common first origin 1999Q4 and the
+common final target 2019Q4, so the target periods are 2000Q1-2019Q4 (80
+errors) at $h=1$, 2000Q4-2019Q4 (77) at $h=4$, and 2001Q4-2019Q4 (73) at
+$h=8$. One shared evaluation harness (Appendix A) produces every model's
+forecasts on this schedule.
+
+## Accuracy measures and planned tests
+
+The error is actual minus forecast, $e_t=\pi_t-\hat\pi_t$, so a positive error
+means underprediction. We report RMSE, relative RMSE against the
+four-quarter-average benchmark, MAE, and mean error. RMSE is the primary
+criterion because it penalizes large misses; MAE shows whether a few large
+errors drive RMSE, and mean error shows systematic over- or underprediction.
+
+<!-- OWNER: Jana. List the pre-specified DM-HLN pairs (each model vs. the 4Q
+average; gap AR vs. AR(p); Phillips curve vs. direct AR; local level vs.
+AR(p); VAR vs. AR(p); each combination vs. the best individual model at that
+horizon), run separately at h = 1, 4, 8 with the course corrections. -->
+
+## Corrections to the Stage 1 plan
+
+<!-- OWNER: TBD. Proposed entries below; confirm or edit. -->
+
+| Original decision | Corrected decision | Reason | Made without using post-2020 outcomes? |
+|---|---|---|---|
+| Each member's own FRED download | Instructor-provided course CSVs | One common data vintage for the group | Yes |
+| ADF lag length chosen by BIC across different sample sizes | BIC comparison on a common sample | BIC is only comparable on the same observations | Yes |
+
+# Forecasting methods
+
+<!-- Present the models as one coherent set. For each family: mathematical
+form, forecasting assumption, and the comparison it supports. No code or full
+coefficient tables here. -->
+
+## Benchmarks and autoregressions
+
+<!-- OWNERS: Sarat (random walk, 4Q average), Jana (AR(p)), Odysseus (direct
+AR). State the BIC lag rule; AR(p) is iterated, direct AR estimates one
+equation per horizon. -->
+
+## Changing-mean forecasts
+
+<!-- OWNER: Jana. Local mean tau_t = 0.95 tau_{t-1} + 0.05 pi_t, gap
+g_t = pi_t - tau_t, gap AR, and the fixed 0.46 persistence. -->
+
+## Phillips-curve forecast
+
+<!-- OWNER: Odysseus. Direct equation adding UNRATE; predictive, not causal. -->
+
+## Constant-coefficient VAR
+
+<!-- OWNER: Sarat. Three-variable system in levels, BIC lag rule, constant
+coefficients re-estimated as the window expands; stationarity as a
+limitation. -->
+
+## Local-level state-space model
+
+<!-- OWNER: Jana. Observation and state equations, ML variance estimation,
+Kalman-filter level as the forecast. -->
+
+## Forecast combinations
+
+<!-- OWNER: Odysseus. Equal-weight and inverse-RMSE combinations of the seven
+component models, separately by origin and horizon, using only past errors. -->
+
+# Historical out-of-sample results
+
+## Main historical accuracy results through 2019Q4
+
+<!-- OWNER: Odysseus. Table below is generated from the current `results`
+and updates automatically as models are added. Add MAE evidence and
+mean-error direction, and the discussion the template asks for. -->
+
+```{r}
+#| label: tbl-main
+main_tbl <- scores |>
+  select(model, h, relative_RMSE) |>
+  tidyr::pivot_wider(names_from = h, values_from = relative_RMSE,
+                     names_prefix = "h") |>
+  arrange(h1)
+knitr::kable(main_tbl, digits = 3, booktabs = TRUE,
+  col.names = c("Model", "rRMSE, h=1", "rRMSE, h=4", "rRMSE, h=8"),
+  caption = "Relative RMSE against the four-quarter average, targets through 2019Q4.")
+```
+
+## Planned forecast-comparison tests
+
+<!-- OWNER: Jana. DM-HLN results for every pair and horizon: accuracy
+difference, statistic, p-value, plain-language conclusion. -->
+
+## Diagnostics affecting interpretation
+
+<!-- OWNER: Dawson. Condensed from Stage 2, Step 5; full output in
+Appendix C. -->
+
+The leading estimated Stage 2 one-step model, the gap AR, leaves no detectable
+autocorrelation in its residuals (Ljung-Box $Q(8)=7.19$, $p=0.21$). Its error
+variance is not constant: the residual standard deviation is about 1.2-1.4
+percentage points in calm periods and 2.6-3.1 in 1973-1986 and 2005-2019. A
+few energy-driven shocks dominate RMSE; dropping 2008Q4 alone lowers its
+one-step RMSE from 3.06 to 2.28. Small RMSE differences between models should
+therefore be read with care.
+
+# Selection of the forecasting model
+
+<!-- OWNER: Odysseus. Apply the guide's rule using only targets through
+2019Q4. The table below is provisional and updates as models are added;
+apply the simplicity rule when scores differ by less than 0.01. -->
+
+$$
+Score_j=\frac{rRMSE_{j,1}+rRMSE_{j,4}+rRMSE_{j,8}}{3}
+$$
+
+```{r}
+#| label: tbl-selection
+selection <- main_tbl |>
+  mutate(score = (h1 + h4 + h8) / 3) |>
+  arrange(score)
+knitr::kable(selection, digits = 3, booktabs = TRUE,
+  col.names = c("Model", "rRMSE, h=1", "rRMSE, h=4", "rRMSE, h=8", "Score"),
+  caption = "Selection scores, targets through 2019Q4 (lower is better).")
+```
+
+# Post-2020 evaluation and monitoring
+
+<!-- OWNER: Dawson. Evaluate the selected model only; do not select a new
+winner. -->
+
+## Monitoring
+
+<!-- OWNER: Dawson. Estimate the selected model once through 2019Q4 and keep
+it fixed. Record the model, fixed parameters, and limits (CL = mean error,
+LCL/UCL = mean -/+ 3 SD of historical one-step fitted errors) before looking
+at post-2020 data. Then one-step forecasts at each post-2020 origin, RMSE,
+MAE, mean error, forecast-vs-actual plot, and error plot against the limits. -->
+
+[Monitoring results to be added after model selection.]
+
+# Assessment of the paper-based ideas and monitoring
+
+<!-- OWNERS: Sarat (Claims 1-4), Dawson (Claim 5). For each claim report
+supported / partially supported / not supported / inconclusive, citing
+models, horizons, RMSE differences, and DM-HLN results (Claim 5: the
+monitoring chart, errors outside limits, bias or variability patterns). -->
+
+1. **A simple benchmark is difficult to beat consistently.**
+2. **Allowing the typical inflation level to change improves forecasts.**
+3. **More complex models are not automatically more accurate.**
+4. **There is no universal winner.**
+5. **The selected model remained stable after 2020.**
+
+# Limitations and conclusion
+
+<!-- OWNER: TBD (proposed: Sarat). Central answer, practical implication,
+limitations (few post-2020 observations, uncertainty in stationarity and
+selection, revised data vintage, predictive not causal), one extension. -->
+
+# References {.unnumbered}
+
+<!-- OWNER: all. Add the methodological sources you use. -->
+
+- Faust, J., and Wright, J. H. (2013). "Forecasting Inflation." In
+  *Handbook of Economic Forecasting*, Volume 2A.
+  [Link](https://search.library.berkeley.edu/permalink/01UCS_BER/ppt38b/cdi_elsevier_sciencedirect_doi_10_1016_B978_0_444_53683_9_00001_3).
+- U.S. Bureau of Labor Statistics and Board of Governors of the Federal
+  Reserve System. `CPIAUCSL`, `UNRATE`, and `TB3MS`, from FRED, Federal Reserve
+  Bank of St. Louis, via the course data files.
+- Hyndman, R. J., and Athanasopoulos, G. *Forecasting: Principles and
+  Practice*, 3rd ed.,
+  [stationarity](https://otexts.com/fpp3/stationarity.html),
+  [time-series cross-validation](https://otexts.com/fpp3/toolbox.html#time-series-cross-validation),
+  and [evaluating point forecast accuracy](https://otexts.com/fpp3/toolbox.html#sec-accuracy).
+- R `urca` documentation for
+  [ADF](https://search.r-project.org/CRAN/refmans/urca/html/ur.df.html) and
+  [KPSS](https://search.r-project.org/CRAN/refmans/urca/html/ur.kpss.html).
+
+
+# Appendix A - Reproducibility, revisions, and contributions {.unnumbered}
+
+<!-- OWNER: Dawson. Add software and package versions, the Stage 1 and
+Stage 2 revision record, and the contribution statement. -->
+
+The data are the instructor-provided monthly FRED files in `data/`. The shared
+loader builds the quarterly series, the harness runs every model on the same
+expanding-window schedule, and each team member's models are in their own file
+in `R/`. To reproduce the paper, open the R project and render
+`final_paper.qmd` from the repository root.
+
+## Code {.unnumbered}
+
+```{r}
+#| label: code-data
+#| file: R/01_data.R
+#| eval: false
+#| echo: true
+```
+
+```{r}
+#| label: code-harness
+#| file: R/02_harness.R
+#| eval: false
+#| echo: true
+```
+
+```{r}
+#| label: code-models-chandra
+#| file: R/03_models_chandra.R
+#| eval: false
+#| echo: true
+```
+
+```{r}
+#| label: code-models-jana
+#| file: R/03_models_jana.R
+#| eval: false
+#| echo: true
+```
+
+```{r}
+#| label: code-models-odysseus
+#| file: R/03_models_odysseus.R
+#| eval: false
+#| echo: true
+```
+
+```{r}
+#| label: code-var-chandra
+#| file: R/05_models_chandra.R
+#| eval: false
+#| echo: true
+```
+
+```{r}
+#| label: code-evaluation-odysseus
+#| file: R/04_evaluation_odysseus.R
+#| eval: false
+#| echo: true
+```
+
+Code chunks in this report:
+
+```{r}
+#| label: code-report
+#| ref.label: !expr knitr::all_labels(!grepl("^code-", label))
+#| eval: false
+#| echo: true
+```
+
+# Appendix B - Complete forecast results {.unnumbered}
+
+<!-- OWNER: Odysseus. -->
+
+```{r}
+#| label: tbl-full-results
+knitr::kable(scores, digits = 3, booktabs = TRUE,
+  col.names = c("Model", "h", "n", "RMSE", "Relative RMSE", "MAE", "Mean error"),
+  caption = "Complete forecast accuracy, targets through 2019Q4, ordered by RMSE within horizon.")
+```
+
+# Appendix C - Supporting diagnostics {.unnumbered}
+
+## Stationarity tests {.unnumbered}
+
+<!-- OWNER: TBD. Ported from Stage 2, Step 1. -->
+
+For each ADF regression we use an intercept and no trend, selecting 0-4
+augmentation lags by BIC on a common sample. KPSS tests use a constant and the
+short bandwidth. The 5% critical values are -2.880 (ADF) and 0.463 (KPSS).
+
+```{r}
+#| label: tbl-stationarity
+test_series <- function(y) {
+  differences <- embed(diff(y), 5)
+  regression_data <- data.frame(change = differences[, 1],
+                                level = y[5:(length(y) - 1)], differences[, 2:5])
+  names(regression_data)[3:6] <- paste0("lag", 1:4)
+  bic <- sapply(0:4, function(k) {
+    formula <- reformulate(c("level", head(paste0("lag", 1:4), k)),
+                           response = "change")
+    BIC(lm(formula, data = regression_data))
+  })
+  k <- which.min(bic) - 1
+  adf <- ur.df(y, type = "drift", lags = k, selectlags = "Fixed")
+  kpss <- ur.kpss(y, type = "mu", lags = "short")
+  data.frame(ADF_lags = k, ADF = adf@teststat[1, "tau2"], KPSS = kpss@teststat)
+}
+tests <- do.call(rbind, lapply(seq_along(series), function(j) {
+  y <- initial[[series[j]]]
+  rbind(cbind(Series = series_names[j], Form = "Level", test_series(y)),
+        cbind(Series = series_names[j], Form = "First difference", test_series(diff(y))))
+}))
+knitr::kable(tests, digits = 3, booktabs = TRUE,
+  col.names = c("Series", "Form", "ADF lags", "ADF", "KPSS"),
+  caption = "ADF and KPSS tests, 1960Q1-1999Q4.")
+```
+
+## Residual diagnostics for the leading Stage 2 one-step model {.unnumbered}
+
+<!-- OWNER: Dawson. Ported from Stage 2, Step 5. -->
+
+Among the estimated models (AR($p$), direct AR, gap AR, Phillips curve), the
+gap AR has the lowest one-step RMSE. We refit it on all data through 2019Q4.
+
+```{r}
+#| label: step5-refit
+h1_rmse <- results |>
+  filter(h == 1 & model %in% c("AR(p)", "Direct AR", "Gap AR", "Phillips curve")) |>
+  group_by(model) |>
+  summarize(rmse = sqrt(mean(error^2))) |>
+  arrange(rmse)
+best_model <- h1_rmse |> slice(1) |> pull(model)
+stopifnot(best_model == "Gap AR")
+
+train_2019 <- q |>
+  as_tibble() |>
+  filter(qtr <= yearquarter("2019 Q4")) |>
+  select(qtr, infl, unrate, tbill)
+gap_fit <- fit_gap_ar(train_2019)
+resid_ts <- gap_fit$resid |> as_tsibble(index = qtr)
+lb <- resid_ts |> features(resid, ljung_box, lag = 8, dof = gap_fit$p)
+```
+
+BIC selects `r gap_fit$p` gap lags, with coefficients summing to
+`r sprintf("%.2f", sum(coef(gap_fit$fit)[-1]))`. The residual standard error is
+`r sprintf("%.2f", sigma(gap_fit$fit))` percentage points. The Ljung-Box
+statistic is `r sprintf("%.2f", lb$lb_stat)` with `r 8 - gap_fit$p` degrees of
+freedom ($p$ = `r sprintf("%.3f", lb$lb_pvalue)`).
+
+```{r}
+#| label: fig-step5-resid
+#| fig-width: 7
+#| fig-height: 2.8
+#| fig-cap: "Gap AR residuals, refit through 2019Q4 (percentage points)."
+resid_ts |>
+  autoplot(resid) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(x = NULL, y = "Residual (pp)")
+```
+
+```{r}
+#| label: fig-step5-acf
+#| fig-width: 7
+#| fig-height: 2.8
+#| fig-cap: "Gap AR residual ACF through 20 quarters. Dashed lines are approximate 95% bounds."
+resid_ts |>
+  ACF(resid, lag_max = 20) |>
+  autoplot() +
+  labs(x = "Lag (quarters)", y = "ACF")
+```
+
+```{r}
+#| label: tbl-step5-sd
+sd_by_period <- resid_ts |>
+  as_tibble() |>
+  mutate(period = case_when(
+    qtr <= yearquarter("1972 Q4") ~ "1960-1972",
+    qtr <= yearquarter("1986 Q4") ~ "1973-1986",
+    qtr <= yearquarter("2004 Q4") ~ "1987-2004",
+    TRUE ~ "2005-2019")) |>
+  group_by(period) |>
+  summarize(quarters = n(), sd = sd(resid), max_abs = max(abs(resid)))
+knitr::kable(sd_by_period, digits = 2, booktabs = TRUE,
+  col.names = c("Period", "Quarters", "Residual SD", "Largest |residual|"),
+  caption = "Gap AR residual variability by period.")
+```
+
+## Forecast-comparison tests {.unnumbered}
+
+<!-- OWNER: Jana. Full DM-HLN output. -->
+
+## Monitoring output {.unnumbered}
+
+<!-- OWNER: Dawson. -->
+
+# Appendix D - Stage 3 analysis {.unnumbered}
+
+## VAR {.unnumbered}
+
+<!-- OWNER: Sarat. -->
+
+## Local-level state-space model {.unnumbered}
+
+<!-- OWNER: Jana. -->
+
+## Forecast combinations, complete comparison, and selection {.unnumbered}
+
+<!-- OWNER: Odysseus. -->
+
+## Monitoring {.unnumbered}
+
+<!-- OWNER: Dawson. -->
