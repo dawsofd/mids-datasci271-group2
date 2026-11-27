@@ -149,3 +149,41 @@ model_gap_fixed <- function(train) {
   fc <- tau_T + (0.46^h) * g_T
   tibble(h = h, forecast = fc)
 }
+
+
+### 5.3 Step 2: Local-Level State-Space Model
+# Equation:
+#   pi_t = mu_t + eps_t,     eps_t ~ i.i.d. N(0, sigma_eps^2)  (measurement / noise)
+#   mu_t = mu_{t-1} + eta_t, eta_t ~ i.i.d. N(0, sigma_eta^2)  (state / level)
+#
+# At each forecast origin T:
+# 1. Estimate both disturbance variances (sigma_eta^2, sigma_eps^2) by MLE
+#    using data available through T.
+# 2. Use the Kalman filter to estimate the current contemporaneous underlying level, mu_hat_{T|T}.
+# 3. Point forecasts are constant across horizons:
+#    pi_hat_{T+h|T}^{LL} = mu_hat_{T|T}, h in {1, 4, 8}.
+
+fit_local_level <- function(train) {
+  stopifnot(nrow(train) > 0, all(is.finite(train$infl)))
+
+  # Maximum likelihood estimation of disturbance variances via StructTS
+  fit <- stats::StructTS(train$infl, type = "level")
+
+  # Contemporaneous filtered state estimate at origin T: mu_hat_{T|T}
+  mu_T <- as.numeric(tail(fit$fitted[, "level"], 1))
+
+  list(
+    fit = fit,
+    mu_T = mu_T,
+    sigma2_eta = unname(fit$coef["level"]),
+    sigma2_eps = unname(fit$coef["epsilon"])
+  )
+}
+
+model_local_level <- function(train, horizons = c(1L, 4L, 8L)) {
+  fit_obj <- fit_local_level(train)
+  tibble::tibble(
+    h = horizons,
+    forecast = rep(fit_obj$mu_T, length(horizons))
+  )
+}
